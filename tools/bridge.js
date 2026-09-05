@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // agbridge —— 同机 tmux 里的 agent CLI（claude / codex / agy）互发消息。
-// 原理是「程序替你打字」：找到收件人窗格，等它空闲，把带信封头的正文 send-keys 进它的
+// 原理是「程序替你粘贴」：找到收件人窗格，等它空闲，把带信封头的正文括号粘贴进它的
 // 输入框再补回车；对方看到的就是一条开头写着「谁发的、几号、要不要回」的用户消息。
 // 不走 HTTP、不要鉴权（两边都是本机同一用户），零依赖，复用 server.js 的 paneState()。
 //
@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFile, spawn } = require('child_process');
-const { paneState } = require(path.join(__dirname, '..', 'server.js'));
+const { paneState, tmuxPaste } = require(path.join(__dirname, '..', 'server.js'));
 
 // 状态目录按系统账号的 home（/etc/passwd）定，不看 $HOME：多账号 claude 各自改了 HOME，
 // codex 用的是 /root，编号和日志必须共用一份，否则 log 互相看不见、编号也可能撞
@@ -114,8 +114,9 @@ function envelope(m) {
   return `[bridge ${head.join(' ')}]\n${m.body.trim()}\n[/bridge]`;
 }
 
-// 真正敲进去：等空闲 → 文本(-l 字面量) → 停一拍 → Enter（codex 靠按键间隔认粘贴，
-// 紧跟的回车会被当成粘贴里的换行而不提交，见 server.js /api/tmux/send）
+// 真正敲进去：等空闲 → 正文括号粘贴（tmuxPaste，不用 send-keys -l 逐字打）→ 停一拍 → Enter。
+// 逐字打的话 codex 靠按键间隔猜粘贴，几百字的正文它嚼完之前补的 Enter 全被当成换行吞掉，
+// 消息就一直挂在输入框里不发；括号粘贴有明确结束标记，紧跟的 Enter 才是一次干净的回车
 async function deliver(m, opt) {
   const t0 = Date.now();
   let st = await stateOf(m.to);
@@ -128,7 +129,7 @@ async function deliver(m, opt) {
     st = await stateOf(m.to);
   }
   if (st === 'gone') { logLine({ ...m, status: 'gone' }); throw new Error(`窗格 ${m.to} 已不存在`); }
-  await tmux(['send-keys', '-t', m.to, '-l', '--', envelope(m)]);
+  await tmuxPaste(m.to, envelope(m));
   await sleep(200);
   await tmux(['send-keys', '-t', m.to, 'Enter']);
   logLine({ ...m, status: 'sent', waitedMs: Date.now() - t0 });

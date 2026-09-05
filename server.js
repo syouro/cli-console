@@ -1199,6 +1199,21 @@ function tmux(args) {
       });
   });
 }
+// 往窗格里灌一段文本：不用 send-keys -l 逐字「打字」，而是装进 tmux 缓冲区再 paste-buffer -p
+// 括号粘贴（应用开了 bracketed paste 才加 ESC[200~/201~ 包裹，claude/codex/agy 三家都开了）。
+// 逐字打字的问题：codex 等 TUI 靠「按键到达间隔」猜粘贴，几百字的 CJK 正文它要嚼好一阵，
+// 后面补的 Enter（甚至隔了两三秒的第二个）会被当成粘贴里的换行吞掉，正文就一直挂在输入框里；
+// 括号粘贴有明确的结束标记，粘贴完紧跟的 Enter 就是干净的一次回车。
+// 缓冲区名带 pid+时间戳防并发撞名，-d 用完即删；换行按 paste-buffer 默认换成 CR（终端回车就是 CR）。
+function tmuxPaste(target, text) {
+  const buf = `agb-${process.pid}-${Date.now()}`;
+  return new Promise((resolve, reject) => {
+    const c = execFile('tmux', ['load-buffer', '-b', buf, '-'], { timeout: 5000 },
+      (err, _out, stderr) => err ? reject(new Error(String(stderr || '').trim() || String(err.message || err))) : resolve());
+    c.stdin.on('error', () => { /* tmux 先退出时的 EPIPE，走上面的 err */ });
+    c.stdin.end(text);
+  }).then(() => tmux(['paste-buffer', '-p', '-d', '-b', buf, '-t', target]));
+}
 const PANE_FMT = ['#{pane_id}', '#{session_name}', '#{window_index}', '#{window_name}',
   '#{pane_index}', '#{pane_current_command}', '#{pane_current_path}',
   '#{pane_active}', '#{pane_width}', '#{pane_height}',
@@ -1804,10 +1819,9 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, { error: 'bad request' }, 400); return;
       }
       try {
-        if (text) await tmux(['send-keys', '-t', t, '-l', '--', text]);
-        // codex 等 TUI 按「按键到达间隔」识别粘贴：文本后紧跟的 Enter 会被当成粘贴里的
-        // 换行而不提交。隔一拍再发具名键，让 TUI 先把文本当粘贴收完
-        if (text && keys.length) await new Promise((r) => setTimeout(r, 150));
+        if (text) await tmuxPaste(t, text); // 括号粘贴，见 tmuxPaste 注释
+        // 粘贴完停一拍再发具名键，给 TUI 把粘贴事件处理完的时间
+        if (text && keys.length) await new Promise((r) => setTimeout(r, 200));
         for (const k of keys) await tmux(['send-keys', '-t', t, k]);
         sendJSON(res, { ok: true });
       } catch (e) { sendJSON(res, { error: String(e.message || e).split('\n')[0] }, 500); }
@@ -1889,6 +1903,7 @@ module.exports = {
   refreshIndex, listAll, search, loadSession, deleteSession, summary, INDEX,
   saveIndex, saveBlobs, // 供测试强制落盘（生产走 3s 防抖）
   stripAnsi, paneState, // tmux 桥接的纯函数
+  tmuxPaste, // 往窗格灌文本（括号粘贴），agbridge 复用
   parseMeminfo, parseProcStat, subtreeRss, sysSnapshot, // 服务器状态
 };
 

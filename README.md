@@ -80,7 +80,7 @@ SECURE_COOKIE=0 COOKIE_PATH=/ PORT=48999 node server.js
 ## agent 互通：`agbridge`（tools/bridge.js）
 
 让同一台机器 tmux 里的几个 agent CLI（Claude Code / Codex / Antigravity）互发消息，
-不需要 MCP：原理是"程序替你打字"——找到收件人窗格，等它空闲（复用 `paneState()`），
+不需要 MCP：原理是"程序替你粘贴"——找到收件人窗格，等它空闲（复用 `paneState()`），
 把带信封头的正文敲进它的输入框再补回车。对方看到的是一条开头写着"谁发的、几号、要不要回"的消息：
 
 ```

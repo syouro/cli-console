@@ -113,7 +113,7 @@
 - 路由：`GET /api/tmux`（窗格列表）、`GET /api/tmux/sys`（服务器状态：/proc 读内存/负载/磁盘 +
   每窗格进程树 RSS，估算「还能再开几个 agent」——单价取现有 agent 窗格 RSS 中位数，
   没有样本按 500MB；终端页顶部状态条 10s 轮询展示）、`GET /api/tmux/pane?t=%N[&lite=1]`（抓屏+状态）、
-  `POST /api/tmux/send`（注入；文本走 `-l` 字面量，具名键过 `TMUX_KEYS` 白名单）、
+  `POST /api/tmux/send`（注入；文本走 `tmuxPaste()` 括号粘贴，具名键过 `TMUX_KEYS` 白名单）、
   `POST /api/tmux/new`（新建会话：会话名过白名单、cwd 必须是已存在目录；启动命令会
   包一层 `; exec $SHELL`，命令退出后落回 shell 而不是会话消失）、`POST /api/tmux/kill`（关窗格）、
   `POST /api/tmux/resize`（`resize-window -x/-y` 调窗口宽高；手机开裸终端时前端自动
@@ -204,7 +204,10 @@ node --test        # test/ 下的 node:test 用例（纯函数 + parseSession + 
 ## agent 互通脚本（`tools/bridge.js`，命令名 `agbridge`）
 
 - 让同机 tmux 里的 claude / codex / agy 互发消息：找收件人窗格 → 等 `paneState()` 判 idle →
-  `send-keys -l` 敲进带信封头的正文（`[bridge #id from= to= kind= re=]…[/bridge]`）→ 停一拍补 Enter。
+  `tmuxPaste()` 括号粘贴进带信封头的正文（`[bridge #id from= to= kind= re=]…[/bridge]`）→ 停一拍补 Enter。
+  **不能用 `send-keys -l` 逐字打**：codex 靠按键间隔猜粘贴，几百字的正文它嚼完之前补的 Enter
+  （哪怕隔两三秒的第二个）全被当成粘贴里的换行吞掉，消息一直挂在输入框里不发；
+  `load-buffer` + `paste-buffer -p` 有明确的粘贴结束标记，三家 CLI 都开了 bracketed paste。
   就是网页控制条那条通道换了个调用方；不走 HTTP、不要鉴权（本机同用户），
   `require('../server.js')` 复用 `paneState`。命令名不能叫 `bridge`：与 iproute2 的 `/usr/sbin/bridge` 撞名。
 - 对方忙就 `spawn` 一个 detached 子进程（`--deliver <json>`）轮询到空闲再投，调用方立即返回；
