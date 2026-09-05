@@ -345,12 +345,20 @@ async function open(s, jumpIdx) {
   hideUdetail(); // 换会话时收起用量明细
   var uc = $('#uchip');
   if (uc) uc.onclick = function () { toggleUdetail(data); };
-  $('#exp').onclick = function () {
-    var a = document.createElement('a');
-    a.href = 'api/export?project=' + encodeURIComponent(data.project) +
-      '&id=' + encodeURIComponent(data.id) + '&src=' + (data.src || 'claude') + shareQ();
-    a.download = ''; document.body.appendChild(a); a.click(); a.remove();
+  $('#exp').onclick = function (e) { // 展开导出菜单（完整 / 纯对话）
+    e.stopPropagation();
+    $('#exp').parentNode.classList.toggle('open');
   };
+  $('#expdd').querySelectorAll('button').forEach(function (b) {
+    b.onclick = function () {
+      $('#exp').parentNode.classList.remove('open');
+      var a = document.createElement('a');
+      a.href = 'api/export?project=' + encodeURIComponent(data.project) +
+        '&id=' + encodeURIComponent(data.id) + '&src=' + (data.src || 'claude') +
+        (b.dataset.mode === 'clean' ? '&mode=clean' : '') + shareQ();
+      a.download = ''; document.body.appendChild(a); a.click(); a.remove();
+    };
+  });
   $('#del').onclick = function () { delSession(data); };
   if (SHARE) {
     $('#fav').style.display = 'none'; $('#share').style.display = 'none';
@@ -1199,6 +1207,7 @@ function showComposer(pn, mode) {
   COMP = { target: pn.id, mode: mode, sig: '' };
   $('#composer').classList.add('show');
   $('#cterm').style.display = mode === 'pane' ? 'none' : '';
+  $('#ckill').style.display = mode === 'session' ? '' : 'none'; // 会话头部的「关 tmux」
   $('#ctarget').textContent = '→ tmux ' + paneLabel(pn) + ' · ' + pn.cmd + ' · ' + pn.cwd;
   $('#cstate').innerHTML = '';
   if (mode === 'session') schedCState(400);
@@ -1207,6 +1216,7 @@ function hideComposer() {
   COMP = { target: null, mode: null, sig: '' };
   clearTimeout(cstateTimer);
   $('#composer').classList.remove('show');
+  $('#ckill').style.display = 'none';
   $('#cstate').innerHTML = '';
 }
 function schedCState(ms) { clearTimeout(cstateTimer); cstateTimer = setTimeout(pollCState, ms); }
@@ -1980,6 +1990,22 @@ $('#cin').addEventListener('drop', function (e) {
 document.querySelectorAll('#composer .ckey').forEach(function (b) {
   b.onclick = function () { sendTmux({ keys: [b.dataset.k] }); };
 });
+$('#ckill').onclick = async function () { // 会话头部直接关掉对应的 tmux 窗格，不用切去终端页
+  var pn = (TMUX.panes || []).filter(function (x) { return x.id === COMP.target; })[0];
+  if (!pn) return;
+  if (!confirm('关闭 tmux 窗格 ' + paneLabel(pn) + '（' + pn.cmd + '）？\n\n其中运行的进程会被终止。')) return;
+  var b = $('#ckill'); b.disabled = true;
+  try {
+    var r = await fetch('api/tmux/kill', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ t: pn.id })
+    });
+    var j = await r.json().catch(function () { return {}; });
+    if (!j.ok) { alert('关闭失败：' + (j.error || r.status)); return; }
+    TMUX.panes = (TMUX.panes || []).filter(function (x) { return x.id !== pn.id; });
+    hideComposer();
+  } finally { b.disabled = false; }
+};
 $('#cterm').onclick = function () { // 从会话控制条跳到裸终端画面
   var pn = (TMUX.panes || []).filter(function (x) { return x.id === COMP.target; })[0];
   if (pn) openPane(pn);
@@ -1988,6 +2014,9 @@ $('#more').onclick = function () { // 手机上展开/收起 收藏·分享·导
   var on = $('#top').classList.toggle('open');
   $('#more').classList.toggle('on', on);
 };
+document.addEventListener('click', function () { // 点空白处收起导出菜单
+  var w = $('#exp') && $('#exp').parentNode; if (w) w.classList.remove('open');
+});
 $('#menuBtn').onclick = function () { document.body.classList.toggle('nav-open'); };
 $('#scrim').onclick = function () { document.body.classList.remove('nav-open'); };
 $('#loginBtn').onclick = doLogin;

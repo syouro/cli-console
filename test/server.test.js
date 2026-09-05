@@ -117,6 +117,29 @@ test('searchBlobs: 正文与思考分离、统一小写', () => {
   assert.ok(think.includes('secret thought'));
 });
 
+test('toMarkdown：clean 模式去掉工具/思考/子代理，只剩工具结果的消息跳过', () => {
+  const s = { title: 'T', project: 'p', msgCount: 3, summaries: [], src: 'claude',
+    messages: [
+      { role: 'user', blocks: [{ kind: 'text', text: '你好' }] },
+      { role: 'assistant', blocks: [
+        { kind: 'thinking', text: '秘密思考' },
+        { kind: 'text', text: '我看看' },
+        { kind: 'tool_use', name: 'Bash', input: { command: 'ls -la' } }] },
+      { role: 'user', blocks: [{ kind: 'tool_result', text: 'file1 file2' }] },
+      { role: 'assistant', blocks: [{ kind: 'text', text: '搞定' }] },
+    ],
+    sidechains: [{ agentId: 'ag1', firstPrompt: '子任务',
+      messages: [{ role: 'assistant', blocks: [{ kind: 'text', text: '子代理正文' }] }] }] };
+  const full = S.toMarkdown(s);
+  assert.ok(full.includes('秘密思考') && full.includes('ls -la') && full.includes('file1')
+    && full.includes('子代理正文'));
+  const clean = S.toMarkdown(s, { clean: true });
+  assert.ok(clean.includes('你好') && clean.includes('我看看') && clean.includes('搞定'));
+  assert.ok(!clean.includes('秘密思考') && !clean.includes('ls -la') && !clean.includes('file1'));
+  assert.ok(!clean.includes('子代理正文') && !clean.includes('🔧'));
+  assert.equal((clean.match(/^### /gm) || []).length, 3); // 纯 tool_result 的 user 回合被跳过
+});
+
 test('listAll + 索引：增量刷新与命中', () => {
   writeSession('proj-b', 's2', [usr('独特关键词 alpaca'), asst('回复 alpaca')]);
   const list = S.listAll();                       // 触发 refreshIndex 建索引

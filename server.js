@@ -1096,14 +1096,19 @@ function makeSnippet(text, terms, role, kind) {
 }
 
 // ---------- Markdown 导出 ----------
-function mdMessages(L, messages, aiName) {
+// clean=true：纯对话版——只留正文/压缩摘要，去掉思考与工具调用/结果，
+// 只剩工具结果的消息（user 侧的 tool_result 回合）整条跳过
+function mdMessages(L, messages, aiName, clean) {
   for (const m of messages) {
     if (m.isMeta) continue;
+    const blocks = clean
+      ? m.blocks.filter((b) => b.kind === 'text' || b.kind === 'compact') : m.blocks;
+    if (clean && !blocks.some((b) => (b.text || '').trim())) continue;
     const who = m.role === 'user' ? '🧑 你' : m.role === 'system' ? '⚙ 系统'
       : '🤖 ' + (aiName || 'Claude');
     const t = m.ts ? '  _' + new Date(m.ts).toISOString() + '_' : '';
     L.push('---', '', '### ' + who + (m.compact ? '（压缩摘要）' : '') + t, '');
-    for (const b of m.blocks) {
+    for (const b of blocks) {
       if (b.kind === 'text') { L.push(b.text, ''); }
       else if (b.kind === 'compact') { L.push('> 📦 ' + b.text, ''); }
       else if (b.kind === 'thinking') {
@@ -1118,7 +1123,8 @@ function mdMessages(L, messages, aiName) {
     }
   }
 }
-function toMarkdown(s) {
+function toMarkdown(s, opts) {
+  const clean = !!(opts && opts.clean);
   const L = [];
   L.push('# ' + s.title, '');
   const meta = [s.project, s.msgCount + ' 条消息',
@@ -1129,7 +1135,8 @@ function toMarkdown(s) {
     L.push('<details><summary>📦 历史摘要（压缩续接）</summary>', '', sum, '', '</details>', '');
   }
   const aiName = s.src === 'codex' ? 'Codex' : 'Claude';
-  mdMessages(L, s.messages, aiName);
+  mdMessages(L, s.messages, aiName, clean);
+  if (clean) return L.join('\n'); // 纯对话版不带子代理（那是工具调用的展开）
   for (const sc of s.sidechains) {
     L.push('', '## 🤖 子代理：' + (sc.firstPrompt || sc.agentId), '');
     mdMessages(L, sc.messages, aiName);
@@ -1518,13 +1525,15 @@ const server = http.createServer(async (req, res) => {
       if (!canRead(project, id)) { sendJSON(res, { error: 'unauthorized' }, 401); return; }
       const s = loadSession(project, id, src);
       if (!s) { sendJSON(res, { error: 'not found' }, 404); return; }
-      const fn = (s.title || 'session').replace(/[^\w一-龥-]+/g, '_').slice(0, 60);
+      const clean = url.searchParams.get('mode') === 'clean'; // 纯对话版：不含工具调用/思考
+      const fn = (s.title || 'session').replace(/[^\w一-龥-]+/g, '_').slice(0, 60) +
+        (clean ? '-纯对话' : '');
       res.writeHead(200, {
         'Content-Type': 'text/markdown; charset=utf-8',
         'Content-Disposition': "attachment; filename*=UTF-8''" +
           encodeURIComponent(fn + '.md'),
       });
-      res.end(toMarkdown(s)); return;
+      res.end(toMarkdown(s, { clean })); return;
     }
 
     // 以下均需登录
@@ -1876,7 +1885,7 @@ module.exports = {
   globToRe, isExcluded, extractBlocks, toolResultText, plainText,
   projAllowed, safeUpName, // 子账号项目白名单 / 文件区文件名白名单
   priceFor, costOf, parseSession, parseCodexSession, codexProject, parseAgySession, agyProject,
-  searchBlobs, indexEntry,
+  searchBlobs, indexEntry, toMarkdown,
   refreshIndex, listAll, search, loadSession, deleteSession, summary, INDEX,
   saveIndex, saveBlobs, // 供测试强制落盘（生产走 3s 防抖）
   stripAnsi, paneState, // tmux 桥接的纯函数
@@ -2002,13 +2011,22 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 #top h2{margin:0;font-size:16px}
 #top .sub{font-size:12px;color:var(--muted);margin-top:4px;display:flex;gap:14px;flex-wrap:wrap}
 .tbtns{display:flex;gap:8px;align-items:flex-start}
+.ddwrap{position:relative}
+.dd{display:none;position:absolute;right:0;top:calc(100% + 4px);z-index:30;min-width:200px;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px;
+  box-shadow:0 6px 20px rgba(0,0,0,.18)}
+.ddwrap.open .dd{display:block}
+.dd button{display:block;width:100%;text-align:left;border:0;background:none;color:var(--ink);
+  padding:7px 10px;border-radius:6px;font-size:13px;cursor:pointer}
+.dd button:hover{background:var(--field)}
+.dd button small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
 #more{display:none;border:1px solid var(--line);background:var(--field);color:var(--muted);
   border-radius:9px;width:34px;height:30px;font-size:15px;line-height:1;cursor:pointer;flex:none}
 #more.on{border-color:var(--accent);color:var(--accent)}
-#exp,#fav,#share,#del{border:1px solid var(--line);background:var(--field);color:var(--ink);border-radius:9px;
+#exp,#fav,#share,#del,#ckill{border:1px solid var(--line);background:var(--field);color:var(--ink);border-radius:9px;
   padding:7px 12px;font-size:12.5px;cursor:pointer;white-space:nowrap}
 #exp:hover,#fav:hover,#share:hover{border-color:var(--accent)}
-#del{color:#d64545}
+#del,#ckill{color:#d64545}
 #del:hover{border-color:#d64545;background:rgba(214,69,69,.08)}
 .robadge{background:var(--accent-soft);color:var(--accent);border-radius:8px;
   padding:1px 8px;font-size:11px;font-weight:600}
@@ -2344,9 +2362,14 @@ details.pack{background:var(--accent-soft);border-radius:8px;font-size:12.5px}
   <div id="top"><div style="min-width:0;flex:1"><h2 id="ttl"></h2><div class="sub" id="sub"></div>
       <input id="favnote" placeholder="收藏备注，回车保存" style="display:none"></div>
     <button id="more" title="更多操作">⋯</button>
-    <div class="tbtns"><button id="fav" title="收藏">☆</button>
+    <div class="tbtns"><button id="ckill" style="display:none" title="关闭这个会话对应的 tmux 窗格（其中的 CLI 进程会被终止）">关 tmux</button>
+      <button id="fav" title="收藏">☆</button>
       <button id="share" title="生成 7 天有效的只读分享链接">分享</button>
-      <button id="exp">导出 MD</button>
+      <span class="ddwrap"><button id="exp" title="导出为 Markdown">导出 MD ▾</button>
+        <div class="dd" id="expdd">
+          <button data-mode="full">完整版<small>含思考、工具调用与结果、子代理</small></button>
+          <button data-mode="clean">纯对话版<small>只留你和 AI 的正文</small></button>
+        </div></span>
       <button id="del" title="删除对话文件（不可恢复）">删除</button></div></div>
   <div id="udetail"></div>
   <div id="chains"></div>
