@@ -77,6 +77,35 @@ pm2 restart claude-history   # 改代码后
 SECURE_COOKIE=0 COOKIE_PATH=/ PORT=48999 node server.js
 ```
 
+## agent 互通：`agbridge`（tools/bridge.js）
+
+让同一台机器 tmux 里的几个 agent CLI（Claude Code / Codex / Antigravity）互发消息，
+不需要 MCP：原理是"程序替你打字"——找到收件人窗格，等它空闲（复用 `paneState()`），
+把带信封头的正文敲进它的输入框再补回车。对方看到的是一条开头写着"谁发的、几号、要不要回"的消息：
+
+```
+[bridge #codex-12 from=codex to=claude kind=ask]
+正文…
+[/bridge]
+```
+
+```bash
+ln -s "$PWD/tools/bridge.js" /usr/local/bin/agbridge   # 装成命令（不能叫 bridge，与 iproute2 撞名）
+agbridge list                                  # 列出 agent 窗格与空闲状态
+agbridge send codex ask "帮我看下 xxx"           # 需要回复
+agbridge send codex reply codex-12 "结论是…"     # 回复对方的 #codex-12
+agbridge send codex note "改完了，不用回"        # 仅通知
+agbridge log                                   # 投递记录
+```
+
+- 收件人可写 agent 名 / tmux 会话名 / pane id；同类 agent 多个时用会话名。对方忙就后台排队，空闲后自动送达。
+- **防互回**靠 `kind`：只有 `ask` 要回，`note` / `reply` 不回，想追问发新的 `ask`。
+- 两边 agent 得知道协议：把 `tools/bridge-protocol.md` 贴进各自的全局指令文件
+  （Claude `~/.claude/CLAUDE.md`、Codex `~/.codex/AGENTS.md`），并给 Claude 加放行规则
+  `"permissions": { "allow": ["Bash(agbridge *)"] }`（auto mode 否则会拦）。
+  Codex 默认沙箱挡 tmux socket，发送需放开沙箱执行。
+- 状态在 `/root/.agent-bridge/`（按系统账号 home 定位、不看 `$HOME`，多账号 Claude 与 Codex 共用）。
+
 ## 环境变量（优先于 config.json）
 
 | 变量 | 默认 | 说明 |

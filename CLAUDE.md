@@ -200,3 +200,18 @@ node --test        # test/ 下的 node:test 用例（纯函数 + parseSession + 
 ## 术语（继承 codexDir 全局约定）
 
 - "笔记" / "记录一下" = 创建或更新文件，不是更新 agent 记忆。有歧义先问。
+
+## agent 互通脚本（`tools/bridge.js`，命令名 `agbridge`）
+
+- 让同机 tmux 里的 claude / codex / agy 互发消息：找收件人窗格 → 等 `paneState()` 判 idle →
+  `send-keys -l` 敲进带信封头的正文（`[bridge #id from= to= kind= re=]…[/bridge]`）→ 停一拍补 Enter。
+  就是网页控制条那条通道换了个调用方；不走 HTTP、不要鉴权（本机同用户），
+  `require('../server.js')` 复用 `paneState`。命令名不能叫 `bridge`：与 iproute2 的 `/usr/sbin/bridge` 撞名。
+- 对方忙就 `spawn` 一个 detached 子进程（`--deliver <json>`）轮询到空闲再投，调用方立即返回；
+  `--now` 跳过空闲判断、`--sync` 前台等。等半小时没空闲放弃并记 log。
+- 信封里的身份：agent 名唯一就用 agent 名，同类多个（两个 claude）用 tmux 会话名（`nameOf`）。
+- 状态文件在 `/root/.agent-bridge/`（按 `os.userInfo().homedir` 定，不看 $HOME：多账号 claude 改了 HOME、codex 用 /root，必须共用一份；`seq.json` 按发送者自增编号、`log.jsonl` 投递记录）。
+- 防互回靠 `kind`：只有 `ask` 要回，`note`/`reply` 不回。两边 agent 的 CLAUDE.md / AGENTS.md
+  要贴 `tools/bridge-protocol.md` 那段说明，否则会把 `[bridge]` 段当用户指令。
+- 认 CLI 靠 `/proc/<pane_pid>/…/cmdline`（codex 的 `pane_current_command` 是 node；
+  exec 启动的 claude 没子进程，得看 pane_pid 自己）。

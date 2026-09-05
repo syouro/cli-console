@@ -82,6 +82,30 @@ Local http debugging (production cookies are `Secure` and path-scoped):
 SECURE_COOKIE=0 COOKIE_PATH=/ PORT=48999 node server.js
 ```
 
+## Agent-to-agent messaging: `agbridge` (tools/bridge.js)
+
+Lets agent CLIs running in tmux on the same machine (Claude Code / Codex / Antigravity) message each other — no MCP needed. It "types for you": find the recipient pane, wait until it is idle (reusing `paneState()`), send the enveloped text into its input box and press Enter. The recipient sees a message whose header says who sent it, its number, and whether a reply is expected:
+
+```
+[bridge #codex-12 from=codex to=claude kind=ask]
+body…
+[/bridge]
+```
+
+```bash
+ln -s "$PWD/tools/bridge.js" /usr/local/bin/agbridge   # install (not "bridge" — clashes with iproute2)
+agbridge list                                  # agent panes and idle/busy state
+agbridge send codex ask "please check xxx"       # expects a reply
+agbridge send codex reply codex-12 "result…"     # answers #codex-12
+agbridge send codex note "done, no reply needed" # notify only
+agbridge log                                   # delivery log
+```
+
+- Recipient can be an agent name / tmux session name / pane id; use the session name when several panes run the same CLI. If the recipient is busy the message is queued in the background and delivered once idle.
+- **Ping-pong guard** via `kind`: only `ask` expects a reply; `note` / `reply` must not be answered — send a new `ask` to follow up.
+- Both sides need the protocol: paste `tools/bridge-protocol.md` into each CLI's global instructions (Claude `~/.claude/CLAUDE.md`, Codex `~/.codex/AGENTS.md`) and allow the command for Claude with `"permissions": { "allow": ["Bash(agbridge *)"] }` (auto mode blocks it otherwise). Codex's default sandbox blocks the tmux socket, so sends from Codex need to run outside the sandbox.
+- State lives in `/root/.agent-bridge/` (resolved from the account's passwd home, not `$HOME`, so multi-account Claude and Codex share one log / counter).
+
 ## Environment variables (override config.json)
 
 | Variable | Default | Purpose |
