@@ -226,18 +226,24 @@ function plainText(blocks) {
     .filter(Boolean).join(' ');
 }
 // ---------- 按模型估算美元花费（每百万 token 报价，来自 Anthropic 官方定价）----------
-// 缓存写入按 5 分钟 TTL（输入价 ×1.25）估算，缓存读取按 ×0.1 估算；
-// 会话记录里不区分 TTL，这是行业常见默认档位，非精确账单。
+// in/out 为输入/输出单价；cr 为缓存读取单价（缺省按输入价 ×0.1，Opus 5.5 / Fable 5.1 另有报价）。
+// 缓存写入：usage.cache_creation 带 5m/1h 拆分时分别按 ×1.25 / ×2 计，
+// 老记录没拆分就全按 5 分钟档 ×1.25 估算。非精确账单。
+// 新模型上线要在这里补一行，否则该模型的花费整个不计入统计。
 const PRICING = {
+  'claude-fable-5-1': { in: 10, out: 50, cr: 0.25 },
+  'claude-mythos-5-1': { in: 10, out: 50 },
   'claude-fable-5': { in: 10, out: 50 },
   'claude-mythos-5': { in: 10, out: 50 },
+  'claude-opus-5-5': { in: 4, out: 20, cr: 0.2 },
+  'claude-opus-5': { in: 5, out: 25 },
   'claude-opus-4-8': { in: 5, out: 25 },
   'claude-opus-4-7': { in: 5, out: 25 },
   'claude-opus-4-6': { in: 5, out: 25 },
   'claude-opus-4-5': { in: 5, out: 25 },
   'claude-opus-4-1': { in: 15, out: 75 },
   'claude-opus-4-0': { in: 15, out: 75 },
-  'claude-sonnet-5': { in: 3, out: 15 },
+  'claude-sonnet-5': { in: 2, out: 10 },
   'claude-sonnet-4-6': { in: 3, out: 15 },
   'claude-sonnet-4-5': { in: 3, out: 15 },
   'claude-sonnet-4-0': { in: 3, out: 15 },
@@ -254,9 +260,16 @@ function costOf(u, model) {
   const p = priceFor(model);
   if (!p) return null;
   const inRate = p.in / 1e6, outRate = p.out / 1e6;
-  return (u.input_tokens || 0) * inRate + (u.output_tokens || 0) * outRate +
-    (u.cache_creation_input_tokens || 0) * inRate * 1.25 +
-    (u.cache_read_input_tokens || 0) * inRate * 0.1;
+  const crRate = p.cr != null ? p.cr / 1e6 : inRate * 0.1;
+  const cw = u.cache_creation_input_tokens || 0;
+  const cc = u.cache_creation;
+  let cwCost = cw * inRate * 1.25;
+  if (cc && (cc.ephemeral_1h_input_tokens || cc.ephemeral_5m_input_tokens)) {
+    const h1 = cc.ephemeral_1h_input_tokens || 0;
+    cwCost = h1 * inRate * 2 + (cw - h1) * inRate * 1.25;
+  }
+  return (u.input_tokens || 0) * inRate + (u.output_tokens || 0) * outRate + cwCost +
+    (u.cache_read_input_tokens || 0) * crRate;
 }
 // 用量累加（parseSession / parseCodexSession 共用）：u 为 API 原始 usage 结构
 const zeroU = () => ({ in: 0, out: 0, cw: 0, cr: 0, msgs: 0, cost: 0 });
@@ -860,9 +873,9 @@ const INDEX = new Map(); // key -> { stamp, summary }
 (function loadIndex() {
   try {
     const raw = JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8'));
-    if (raw && raw.version === 3 && raw.entries)
+    if (raw && raw.version === 4 && raw.entries)
       for (const [k, v] of Object.entries(raw.entries)) INDEX.set(k, v);
-  } catch { /* 无索引或旧版本 → 首次请求时重建 */ }
+  } catch { /* 无索引或旧版本 → 首次请求时重建（改了 PRICING 也要升版本号，摘要里存着算好的 cost） */ }
 })();
 let saveTimer = null;
 function scheduleSave() {
@@ -872,7 +885,7 @@ function scheduleSave() {
 }
 function saveIndex() {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-  writeJsonAtomic(INDEX_PATH, { version: 3, entries: Object.fromEntries(INDEX) });
+  writeJsonAtomic(INDEX_PATH, { version: 4, entries: Object.fromEntries(INDEX) });
 }
 function writeJsonAtomic(fp, obj) {
   try {

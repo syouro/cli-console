@@ -70,7 +70,8 @@ test('toolResultText: 字符串 / 文本数组 / 图片占位', () => {
 
 test('priceFor: 精确命中、去日期后缀、未知返回 null', () => {
   assert.deepEqual(S.priceFor('claude-opus-4-8'), { in: 5, out: 25 });
-  assert.deepEqual(S.priceFor('claude-sonnet-5-20250929'), { in: 3, out: 15 });
+  assert.deepEqual(S.priceFor('claude-sonnet-4-5-20250929'), { in: 3, out: 15 });
+  assert.equal(S.priceFor('claude-opus-5-5').in, 4);
   assert.equal(S.priceFor('gpt-4'), null);
   assert.equal(S.priceFor(''), null);
 });
@@ -81,6 +82,14 @@ test('costOf: 含缓存档位系数；未知模型返回 null', () => {
   // 5 + 25 + 5*1.25 + 5*0.1 = 36.75
   assert.ok(Math.abs(c - 36.75) < 1e-6);
   assert.equal(S.costOf({ input_tokens: 100 }, 'unknown-model'), null);
+});
+
+test('costOf: 缓存写入按 5m/1h 拆分计价，模型自带缓存读取价', () => {
+  const c = S.costOf({ input_tokens: 0, output_tokens: 0,
+    cache_creation_input_tokens: 3e6, cache_read_input_tokens: 1e6,
+    cache_creation: { ephemeral_1h_input_tokens: 2e6, ephemeral_5m_input_tokens: 1e6 } }, 'claude-opus-5-5');
+  // 2*4*2 + 1*4*1.25 + 1*0.2 = 21.2
+  assert.ok(Math.abs(c - 21.2) < 1e-6);
 });
 
 test('parseSession: 标题/首问/消息数/用量/侧链', () => {
@@ -171,7 +180,7 @@ test('blobs.json 落盘且不进 index.json（摘要与 blob 分离）', () => {
   S.search('alpaca', false);                               // 触发 blob 载入
   S.saveIndex(); S.saveBlobs();                             // 强制落盘（跳过 3s 防抖）
   const idx = JSON.parse(fs.readFileSync(process.env.INDEX_PATH, 'utf8'));
-  assert.equal(idx.version, 3);
+  assert.equal(idx.version, 4);
   const anyEntry = Object.values(idx.entries)[0];
   assert.ok(anyEntry.summary && anyEntry.stamp);
   assert.ok(!('text' in anyEntry) && !('think' in anyEntry)); // 摘要索引不含 blob
