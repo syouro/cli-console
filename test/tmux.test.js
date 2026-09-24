@@ -321,3 +321,60 @@ test('paneState：普通 shell 输出 → unknown', () => {
   const st = paneState('$ ls\nfoo bar baz\n$ ');
   assert.equal(st.kind, 'unknown');
 });
+
+// ---- bindPanes：窗格 ↔ 会话绑定（procs / claude 登记 / fd 链接全是桩）----
+const { bindPanes } = require('../server.js');
+function mkPanes() {
+  return [
+    { id: '%0', pid: 100, cmd: 'claude', cwd: '/w/a', claude: true },
+    { id: '%1', pid: 200, cmd: 'claude', cwd: '/w/a', claude: true },
+    { id: '%2', pid: 300, cmd: 'node', cwd: '/w/b', claude: true },
+    { id: '%3', pid: 400, cmd: 'bash', cwd: '/w/a', claude: false },
+  ];
+}
+// 进程树：%0 的 shell(100) → claude(101)；%1 直接 exec 的 claude(200)；%2 node(300) → codex(301)
+const PROCS = new Map([
+  [100, { ppid: 1, start: '10', rss: 0 }], [101, { ppid: 100, start: '11', rss: 0 }],
+  [200, { ppid: 1, start: '20', rss: 0 }],
+  [300, { ppid: 1, start: '30', rss: 0 }], [301, { ppid: 300, start: '31', rss: 0 }],
+  [400, { ppid: 1, start: '40', rss: 0 }],
+]);
+test('bindPanes：claude 登记按 pid 落进进程树所在窗格，同目录两个窗格各绑各的', () => {
+  const panes = bindPanes(mkPanes(), { procs: PROCS, claude: [
+    { pid: 101, sessionId: 'aaa', procStart: '11', cwd: '/w/a' },
+    { pid: 200, sessionId: 'bbb', procStart: '20', cwd: '/w/a', tmux: 'CC:@0.%3' }, // 登记的窗格与真实进程树不一致时以进程树为准
+  ] });
+  assert.equal(panes[0].sid, 'aaa'); assert.equal(panes[0].ssrc, 'claude'); assert.equal(panes[0].spid, 101);
+  assert.equal(panes[1].sid, 'bbb');
+  assert.equal(panes[2].sid, undefined); assert.equal(panes[3].sid, undefined);
+});
+test('bindPanes：进程没了 / pid 被复用（procStart 对不上）的登记不绑；没 /proc 树时退回登记的 tmux 窗格', () => {
+  const panes = bindPanes(mkPanes(), { procs: PROCS, claude: [
+    { pid: 999, sessionId: 'dead', procStart: '1' },          // 进程不在
+    { pid: 200, sessionId: 'reused', procStart: '19' },        // 同 pid 但启动时刻不同
+  ] });
+  assert.ok(panes.every((p) => !p.sid));
+  const p2 = bindPanes(mkPanes(), { procs: new Map([[200, { ppid: 1, start: '20', rss: 0 }]]), claude: [
+    { pid: 200, sessionId: 'ccc', procStart: '20', tmux: 'CC:@1.%1' },
+  ] });
+  assert.equal(p2[1].sid, 'ccc');
+});
+test('bindPanes：codex / agy 从进程树打开的文件里认 uuid（只查 agent 窗格，已绑定的不再查）', () => {
+  const os = require('os');
+  const codexDir = require('path').join(os.homedir(), '.codex');
+  const agyDir = require('path').join(os.homedir(), '.gemini', 'antigravity-cli');
+  const asked = [];
+  const panes = bindPanes(mkPanes(), { procs: PROCS, claude: [
+    { pid: 101, sessionId: 'aaa', procStart: '11' },
+  ], fdLinks: (pid) => {
+    asked.push(pid);
+    if (pid === 301) return ['/dev/pts/3', codexDir + '/sessions/2026/09/08/rollout-2026-09-08T09-08-22-01a07e8f-1a90-7bf1-8361-7527f07a216f.jsonl'];
+    if (pid === 200) return [agyDir + '/brain/A215B49B-643a-4b53-a98c-b688328778f7/.system_generated/logs/transcript.jsonl'];
+    return ['/tmp/unrelated-2f1c1b7a-1111-2222-3333-444444444444.lock'];
+  } });
+  assert.equal(panes[0].sid, 'aaa');
+  assert.ok(!asked.includes(100) && !asked.includes(101), 'claude 已绑定的窗格不再翻 fd');
+  assert.ok(!asked.includes(400), '非 agent 窗格不翻 fd');
+  assert.deepEqual([panes[1].sid, panes[1].ssrc], ['a215b49b-643a-4b53-a98c-b688328778f7', 'agy']);
+  assert.deepEqual([panes[2].sid, panes[2].ssrc, panes[2].spid], ['01a07e8f-1a90-7bf1-8361-7527f07a216f', 'codex', 301]);
+});

@@ -1222,12 +1222,107 @@ async function tmuxPanes() {
   let out = '';
   try { out = await tmux(['list-panes', '-a', '-F', PANE_FMT]); }
   catch { return []; } // tmux 未装或无服务 → 空列表
-  return out.split('\n').filter(Boolean).map((l) => {
+  const panes = out.split('\n').filter(Boolean).map((l) => {
     const [id, session, win, winName, paneIdx, cmd, cwd, active, w, h, pid] = l.split('\u241f');
     return { id, session, win: +win, winName, paneIdx: +paneIdx, cmd, cwd,
       active: active === '1', w: +w, h: +h, pid: +pid || 0,
       claude: /^(claude|codex|agy|gemini|node|bun)$/.test(cmd) }; // agent CLI 的进程名可能是 node/bun
   });
+  return bindPanes(panes, { procs: readProcs(), claude: claudeSessionFiles(), fdLinks: procFdLinks });
+}
+// ---------- 窗格 ↔ 会话绑定 ----------
+// 网页会话视图的控制条要知道「这条历史对应哪个窗格」：只按 cwd / 项目名猜，同一目录开了
+// 几个 agent 就会串台（发错窗格、关错窗格）。这里给每个窗格标上它正在跑的会话 id（sid / ssrc）：
+//   claude：CLI 自己在 ~/.claude/sessions/<pid>.json 记了 pid ↔ sessionId ↔ cwd（新版还带
+//     tmux "会话:@窗口.%窗格"），按 pid 落在哪个窗格的进程树里绑定；procStart 对不上说明 pid 被复用。
+//     多账号（不同 HOME）各有一份，按扫描根的上级目录找。
+//   codex / agy：没有这种登记文件，退而看进程树打开的文件里带不带会话 uuid
+//     （rollout-<时间>-<uuid>.jsonl、thread-writer-locks/<uuid>.lock、brain/<uuid>/…），认不出就空着，
+//     前端退回 cwd 匹配 + 手动选择。
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+function claudeSessionFiles() {
+  const out = [], seen = new Set();
+  for (const root of ROOTS) {
+    const dir = path.join(path.dirname(root), 'sessions'); // <home>/.claude/projects → <home>/.claude/sessions
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const n of names) {
+      if (!/^\d+\.json$/.test(n)) continue;
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'));
+        if (j && j.pid && j.sessionId) out.push(j);
+      } catch { /* 写到一半 / 非 JSON */ }
+    }
+  }
+  return out;
+}
+function procFdLinks(pid) {
+  const links = [];
+  try {
+    for (const fd of fs.readdirSync('/proc/' + pid + '/fd')) {
+      try { links.push(fs.readlinkSync('/proc/' + pid + '/fd/' + fd)); } catch { /* 已关 */ }
+    }
+  } catch { /* 进程没了 / 无权限 */ }
+  return links;
+}
+// 纯函数（测试直接喂 procs / claude 登记 / fdLinks 桩）：给 panes 就地补 sid / ssrc / spid
+function bindPanes(panes, ctx) {
+  const procs = ctx.procs || new Map();
+  const byPid = new Map(), byId = new Map();
+  for (const pn of panes) { if (pn.pid) byPid.set(pn.pid, pn); byId.set(pn.id, pn); }
+  // 沿 ppid 往上爬，爬到哪个窗格的 pane_pid 就属于哪个窗格
+  const paneOf = (pid) => {
+    for (let p = +pid, n = 0; p > 1 && n < 64; n++) {
+      if (byPid.has(p)) return byPid.get(p);
+      const st = procs.get(p);
+      if (!st) return null;
+      p = st.ppid;
+    }
+    return null;
+  };
+  for (const s of ctx.claude || []) {
+    const st = procs.get(+s.pid);
+    if (!st) continue; // 进程没了：CLI 异常退出留下的登记文件
+    if (s.procStart && st.start && String(s.procStart) !== String(st.start)) continue; // pid 被复用
+    let pn = paneOf(s.pid);
+    if (!pn) { // 非 Linux 没 /proc 树可爬时退回 CLI 自己记的窗格
+      const m = /(%\d+)$/.exec(String(s.tmux || ''));
+      if (m) pn = byId.get(m[1]) || null;
+    }
+    if (pn && !pn.sid) Object.assign(pn, { sid: s.sessionId, ssrc: 'claude', spid: +s.pid });
+  }
+  if (!ctx.fdLinks) return panes;
+  const kids = new Map();
+  for (const [p, st] of procs) {
+    if (!kids.has(st.ppid)) kids.set(st.ppid, []);
+    kids.get(st.ppid).push(p);
+  }
+  const codexDirs = CODEX_ROOTS.map((r) => path.dirname(r) + path.sep); // ~/.codex/
+  const agyDirs = AGY_ROOTS.map((r) => r + path.sep);                    // ~/.gemini/antigravity-cli/
+  const sidOf = (link) => {
+    const dirs = codexDirs.some((d) => link.startsWith(d)) ? 'codex'
+      : agyDirs.some((d) => link.startsWith(d)) ? 'agy' : '';
+    if (!dirs) return null;
+    const m = UUID_RE.exec(link);
+    return m ? { sid: m[0].toLowerCase(), ssrc: dirs } : null;
+  };
+  for (const pn of panes) {
+    if (pn.sid || !pn.claude || !pn.pid) continue;
+    const q = [pn.pid], seen = new Set();
+    while (q.length && seen.size < 32 && !pn.sid) {
+      const p = q.shift();
+      if (seen.has(p)) continue;
+      seen.add(p);
+      for (const l of ctx.fdLinks(p)) {
+        const hit = sidOf(l);
+        if (hit) { Object.assign(pn, hit, { spid: p }); break; }
+      }
+      for (const c of kids.get(p) || []) q.push(c);
+    }
+  }
+  return panes;
 }
 // ---------- 服务器状态（内存/负载 + 「还能再开几个 agent」估算）----------
 // 全走 /proc（Linux），读不到就退回 os.* 或缺省——只影响状态展示，不影响主功能
@@ -1238,12 +1333,13 @@ function parseMeminfo(text) {
   return o;
 }
 // /proc/<pid>/stat：comm 在括号里可含空格和括号，从最后一个 ')' 之后按空格数字段
-// （state 是第 0 段 → ppid 第 1 段、rss 第 21 段，rss 单位是页）
+// （state 是第 0 段 → ppid 第 1 段、starttime 第 19 段、rss 第 21 段，rss 单位是页；
+// starttime 是开机后的节拍数，claude 的 sessions/<pid>.json 里 procStart 记的就是它，用来防 pid 复用）
 function parseProcStat(line) {
   const cp = String(line).lastIndexOf(')');
   if (cp < 0) return null;
   const f = line.slice(cp + 2).split(' ');
-  return { ppid: +f[1] || 0, rss: (+f[21] || 0) * PAGE_SIZE };
+  return { ppid: +f[1] || 0, start: f[19] || '', rss: (+f[21] || 0) * PAGE_SIZE };
 }
 function readProcs() {
   const procs = new Map(); // pid -> { ppid, rss }
@@ -1819,7 +1915,11 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, { error: 'bad request' }, 400); return;
       }
       try {
-        if (text) await tmuxPaste(t, text); // 括号粘贴，见 tmuxPaste 注释
+        // 一两个字符（菜单编号、y/n）必须当「按键」打进去：括号粘贴会被 TUI 当成往输入框贴文本，
+        // claude 的编号菜单不认，网页上点了选项没反应；成段正文才走括号粘贴（见 tmuxPaste 注释）
+        if (text && text.length <= 3 && !/[\r\n]/.test(text)) {
+          await tmux(['send-keys', '-t', t, '-l', '--', text]);
+        } else if (text) await tmuxPaste(t, text);
         // 粘贴完停一拍再发具名键，给 TUI 把粘贴事件处理完的时间
         if (text && keys.length) await new Promise((r) => setTimeout(r, 200));
         for (const k of keys) await tmux(['send-keys', '-t', t, k]);
@@ -1902,7 +2002,7 @@ module.exports = {
   searchBlobs, indexEntry, toMarkdown,
   refreshIndex, listAll, search, loadSession, deleteSession, summary, INDEX,
   saveIndex, saveBlobs, // 供测试强制落盘（生产走 3s 防抖）
-  stripAnsi, paneState, // tmux 桥接的纯函数
+  stripAnsi, paneState, bindPanes, // tmux 桥接的纯函数
   tmuxPaste, // 往窗格灌文本（括号粘贴），agbridge 复用
   parseMeminfo, parseProcStat, subtreeRss, sysSnapshot, // 服务器状态
 };
@@ -2206,6 +2306,9 @@ mark.cur{outline:2px solid var(--accent);border-radius:3px}
 .stbl th,.stbl td{padding:7px 12px;text-align:right;border-top:1px solid var(--line)}
 .stbl th{color:var(--muted);font-weight:600;font-size:11px;border-top:0;background:var(--field)}
 .stbl th:first-child,.stbl td:first-child{text-align:left}
+/* 首列是项目路径 / 模型名，没有空格可断行：允许任意字符处换行，别把数字列顶出屏幕；数字列不折行 */
+.stbl td:first-child{word-break:break-all;overflow-wrap:anywhere;min-width:110px}
+.stbl th,.stbl td:not(:first-child){white-space:nowrap}
 .stbl td{font-variant-numeric:tabular-nums}
 .tblwrap{overflow-x:auto;border-radius:12px}
 details.pack{background:var(--accent-soft);border-radius:8px;font-size:12.5px}
@@ -2278,6 +2381,9 @@ details.pack{background:var(--accent-soft);border-radius:8px;font-size:12.5px}
 .cbusy{font-size:12.5px;color:var(--muted)}
 .ctarget{max-width:860px;margin:4px auto 0;font-size:10.5px;color:var(--muted);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ctarget select{font:inherit;color:inherit;background:transparent;max-width:min(70vw,520px);
+  border:1px solid var(--border);border-radius:6px;padding:1px 4px;vertical-align:middle}
+.ctarget .cwarn{margin-left:8px;color:#d98c00}
 .termwrap{max-width:1100px;margin:0 auto;position:relative}
 #tresume{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);z-index:5;
   border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;

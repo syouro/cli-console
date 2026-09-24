@@ -1203,15 +1203,41 @@ function termCellCSS() {
 var COMP = { target: null, mode: null, sig: '' }; // mode: 'session' | 'pane'
 var cstateTimer = null, paneTimer = null;
 function paneLabel(pn) { return pn.session + ':' + pn.win + '.' + pn.paneIdx; }
-function showComposer(pn, mode) {
+// 窗格上后端认出的会话（sid）与当前打开的会话是否同一条
+function paneIsSession(pn, data) {
+  return !!(pn && data && pn.sid && pn.sid === data.id && (pn.ssrc || 'claude') === (data.src || 'claude'));
+}
+// opts（会话视图）：{ data, cands }——cands 是所有可选窗格，多于一个时给下拉让用户改绑
+function showComposer(pn, mode, opts) {
   COMP = { target: pn.id, mode: mode, sig: '' };
+  opts = opts || {};
   $('#composer').classList.add('show');
   $('#cterm').style.display = mode === 'pane' ? 'none' : '';
   $('#ckill').style.display = mode === 'session' ? '' : 'none'; // 会话头部的「关 tmux」
-  $('#ctarget').textContent = '→ tmux ' + paneLabel(pn) + ' · ' + pn.cmd + ' · ' + pn.cwd;
+  var tg = $('#ctarget'), cands = opts.cands || [], exact = paneIsSession(pn, opts.data);
+  var desc = function (c) {
+    return paneLabel(c) + ' · ' + c.cmd + ' · ' + c.cwd +
+      (paneIsSession(c, opts.data) ? ' · ✓ 本会话' : c.sid ? ' · 别的会话' : '');
+  };
+  if (mode === 'session' && cands.length > 1) {
+    tg.innerHTML = '→ tmux <select id="cpick">' + cands.map(function (c) {
+      return '<option value="' + esc(c.id) + '"' + (c.id === pn.id ? ' selected' : '') + '>' +
+        esc(desc(c)) + '</option>';
+    }).join('') + '</select>' +
+      (exact ? '' : '<span class="cwarn">按目录猜的，同目录有多个窗格，发错请在此改选</span>');
+    $('#cpick').onchange = function () {
+      var c = cands.filter(function (x) { return x.id === $('#cpick').value; })[0];
+      if (!c) return;
+      try { localStorage.setItem(paneKey(opts.data), c.id); } catch (e) { /* 隐私模式 */ }
+      showComposer(c, mode, opts);
+    };
+  } else {
+    tg.textContent = '→ tmux ' + desc(pn) + (mode === 'session' && !exact && !pn.sid ? '（按目录猜的）' : '');
+  }
   $('#cstate').innerHTML = '';
   if (mode === 'session') schedCState(400);
 }
+function paneKey(data) { return 'chv-pane:' + (data.src || 'claude') + ':' + data.id; }
 function hideComposer() {
   COMP = { target: null, mode: null, sig: '' };
   clearTimeout(cstateTimer);
@@ -1296,16 +1322,32 @@ async function sendTmux(payload) {
     }
   } catch (e) { alert('发送失败：' + e); }
 }
-// 会话视图：cwd 或项目名匹配到 tmux 窗格才显示控制条（优先 claude 进程的窗格）
+// 会话视图：找到这条会话对应的 tmux 窗格才显示控制条。
+// 优先后端认出来的会话 id（pn.sid：claude 从 ~/.claude/sessions/<pid>.json、codex/agy 从进程打开的
+// 文件），这才是真绑定；认不出才退回 cwd / 项目名匹配——且跳过已确认属于别的会话的窗格，
+// 同目录仍有多个候选时先用用户上次选过的（localStorage），再优先 agent 进程的窗格，并给下拉改选
+function pickPane(panes, data) {
+  var exact = panes.filter(function (pn) { return paneIsSession(pn, data); })[0];
+  var cands = panes.filter(function (pn) {
+    if (pn.sid && !paneIsSession(pn, data)) return false; // 已确认是别的会话的
+    return (data.cwd && pn.cwd === data.cwd) || encCwd(pn.cwd) === data.project;
+  });
+  if (exact && cands.indexOf(exact) < 0) cands.unshift(exact); // 进程里 cd 走了也认
+  var pn = exact;
+  if (!pn) {
+    var saved = null;
+    try { saved = localStorage.getItem(paneKey(data)); } catch (e) { /* */ }
+    pn = cands.filter(function (x) { return x.id === saved; })[0] ||
+      cands.filter(function (x) { return x.claude; })[0] || cands[0];
+  }
+  return { pane: pn || null, cands: cands };
+}
 async function bindComposer(data) {
   if (SHARE || !TMUX.enabled) return;
   await loadTmux();
   if (!TMUX.enabled || !current || current.id !== data.id || view.mode !== 'main') return;
-  var cand = (TMUX.panes || []).filter(function (pn) {
-    return (data.cwd && pn.cwd === data.cwd) || encCwd(pn.cwd) === data.project;
-  });
-  var pn = cand.filter(function (x) { return x.claude; })[0] || cand[0];
-  if (pn) showComposer(pn, 'session');
+  var r = pickPane(TMUX.panes || [], data);
+  if (r.pane) showComposer(r.pane, 'session', { data: data, cands: r.cands });
 }
 
 // ---- 终端视图（窗格列表 / 单窗格裸终端）----
@@ -1384,7 +1426,9 @@ async function openTermList() {
   h += panes.map(function (pn, i) {
     return '<div class="item pane-card" data-i="' + i + '"><div class="t">' +
       esc(paneLabel(pn)) + ' · ' + esc(pn.cmd) +
-      (pn.claude ? ' <span class="badge">Claude?</span>' : '') +
+      (pn.sid ? ' <span class="badge" title="会话 ' + esc(pn.sid) + '">' +
+        esc((pn.ssrc || 'claude') + ' ' + pn.sid.slice(0, 8)) + '</span>'
+        : pn.claude ? ' <span class="badge">agent?</span>' : '') +
       '</div><div class="r"><span class="mono">' + esc(pn.cwd) + '</span><span>' +
       pn.w + '×' + pn.h + '</span>' +
       (sys && sys.paneMem && sys.paneMem[pn.id] > 1048576
@@ -1993,7 +2037,9 @@ document.querySelectorAll('#composer .ckey').forEach(function (b) {
 $('#ckill').onclick = async function () { // 会话头部直接关掉对应的 tmux 窗格，不用切去终端页
   var pn = (TMUX.panes || []).filter(function (x) { return x.id === COMP.target; })[0];
   if (!pn) return;
-  if (!confirm('关闭 tmux 窗格 ' + paneLabel(pn) + '（' + pn.cmd + '）？\n\n其中运行的进程会被终止。')) return;
+  var sure = paneIsSession(pn, current) ? '（已确认是本会话）' : '（⚠ 按目录猜的，未确认是本会话）';
+  if (!confirm('关闭 tmux 窗格 ' + paneLabel(pn) + ' · ' + pn.cmd + ' · ' + pn.cwd + sure +
+      '？\n\n其中运行的进程会被终止。')) return;
   var b = $('#ckill'); b.disabled = true;
   try {
     var r = await fetch('api/tmux/kill', {

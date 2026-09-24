@@ -119,7 +119,18 @@
   `POST /api/tmux/resize`（`resize-window -x/-y` 调窗口宽高；手机开裸终端时前端自动
   按屏幕宽高适配，桌面不自动动、有「适配屏幕」按钮手动触发；本地终端想恢复自适应用
   `resize-window -A`）。
-- 会话视图底部 `#composer` 控制条：按 cwd / 项目名匹配到 tmux 窗格才显示（优先 claude 进程）。
+- 会话视图底部 `#composer` 控制条：要先把会话**绑定**到窗格。`tmuxPanes()` 经 `bindPanes()` 给每个
+  窗格标 `sid`/`ssrc`（它正在跑的会话）：claude 读各扫描根旁的 `~/.claude/sessions/<pid>.json`
+  （CLI 自己登记的 pid ↔ sessionId ↔ cwd，多账号各 HOME 一份），按 pid 爬 `/proc` ppid 链落到
+  哪个 pane_pid 就是哪个窗格，`procStart` 与 `/proc/<pid>/stat` 的 starttime 对不上视为 pid 复用；
+  codex / agy 没登记文件，翻窗格进程树打开的 fd 里带不带会话 uuid（`rollout-*-<uuid>.jsonl`、
+  `brain/<uuid>/`），认不出就空着。前端 `pickPane()`：先认 `sid` 相同的窗格，否则退回 cwd / 项目名
+  匹配且**跳过已绑到别的会话的窗格**，仍有多个候选时给下拉改选（记 localStorage `chv-pane:<src>:<id>`）
+  并标「按目录猜的」；「关 tmux」的确认框也写明是否已确认。只按 cwd 猜的老逻辑在同目录开多个
+  agent 时会串台（发错 / 关错窗格）。
+- `/api/tmux/send` 的文本：≤3 个字符且无换行（菜单编号、y/n）用 `send-keys -l` 当按键打入，
+  成段正文才走 `tmuxPaste()` 括号粘贴——粘贴进去的 "1" 会被 claude 当成往输入框贴文本，编号菜单不认，
+  网页上点选项就没反应。
 - 解析的坑（都有测试兜着，样本全部来自真实抓屏；覆盖 claude / codex / agy 三家 CLI）：
   - tmux 会把 `-F` 输出里的控制字符转成八进制字面量，分隔符用可打印的 `␟`；
     选项块下方常有提示行/状态栏，不能要求菜单贴底；输入提示符可能是 `>`/`❯`/`›`。
