@@ -1518,10 +1518,30 @@ function paneState(raw) {
       return { kind: 'menu', question, options: opts, mode, nav: true };
     }
   }
+  // 单行或多行行内选项（如 [1] 允许一次  [a] 总是允许  [n] 拒绝）
+  for (let k = tail.length - 1; k >= Math.max(0, tail.length - 6); k--) {
+    const l = tail[k].trim();
+    const inlineMatches = [...l.matchAll(/\[([0-9a-zA-Z])\]\s*([^\[\n]+)/g)];
+    if (inlineMatches.length >= 2) {
+      let question = '';
+      for (let j = k - 1; j >= Math.max(0, k - 4); j--) {
+        const t = tail[j].trim();
+        if (t && !BORDER_RE.test(t)) { question = t; break; }
+      }
+      const opts = inlineMatches.map((m, i) => ({
+        n: m[1],
+        label: `[${m[1]}] ${m[2].trim()}`,
+        sel: i === 0
+      }));
+      return { kind: 'menu', question, options: opts, mode };
+    }
+  }
   // agy 干活时输入框还挂在屏上，得先靠盲文点阵转轮（⣯ Generating… 之类）认出 busy
   if (busy || tail.some((l) => /^\s*[⠀-⣿]+\s+\S/.test(l))) return { kind: 'busy', mode };
+  // 底部的输入提示符：> / ❯ / ›，或命名的交互提示符如 main> / chat> / bot> / >>>
   for (let k = tail.length - 1; k >= Math.max(0, tail.length - 8); k--) {
-    if (/^[>❯›]$/.test(tail[k]) || /^[>❯›]\s/.test(tail[k])) return { kind: 'idle', mode }; // 底部的输入提示符
+    const l = tail[k].trim();
+    if (/^([a-zA-Z0-9_.-]+>|[>❯›]|>>>)(\s|$)/.test(l)) return { kind: 'idle', mode };
   }
   return { kind: 'unknown', mode };
 }

@@ -317,6 +317,20 @@ test('paneState：esc to interrupt → busy', () => {
   assert.equal(st.kind, 'busy');
 });
 
+test('paneState：行内字母/数字审批选项保留快捷键', () => {
+  const st = paneState('允许执行？\n[1] 允许一次  [a] 总是允许  [n] 拒绝');
+  assert.equal(st.kind, 'menu');
+  assert.equal(st.question, '允许执行？');
+  assert.deepEqual(st.options.map((o) => o.n), ['1', 'a', 'n']);
+});
+
+test('paneState：命名提示符与 Python 提示符 → idle，忙碌标记仍优先', () => {
+  for (const prompt of ['main>', 'chat> ', 'bot> hello', '>>>', '>>> print(1)']) {
+    assert.equal(paneState(prompt).kind, 'idle', prompt);
+    assert.equal(paneState('Working (esc to interrupt)\n' + prompt).kind, 'busy', prompt);
+  }
+});
+
 test('paneState：普通 shell 输出 → unknown', () => {
   const st = paneState('$ ls\nfoo bar baz\n$ ');
   assert.equal(st.kind, 'unknown');

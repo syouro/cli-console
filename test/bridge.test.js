@@ -24,9 +24,42 @@ test('resolveTo：agent 名唯一命中 / 排除自己 / 多个命中报错 / �
   assert.throws(() => resolveTo(panes, 'nope', ''), /找不到/);
 });
 
-test('parseArgs：--file/--from 取值，其余 -- 开关为布尔', () => {
+test('parseArgs：--file/--from/--for 取值，其余 -- 开关为布尔', () => {
   const o = parseArgs(['send', 'codex', 'ask', '--now', '--from', 'me', 'hi', 'there']);
   assert.deepStrictEqual(o, { _: ['send', 'codex', 'ask', 'hi', 'there'], now: true, from: 'me' });
+  assert.deepStrictEqual(parseArgs(['log', '2', '--for', 'hearth']),
+    { _: ['log', '2'], for: 'hearth' });
+});
+
+test('log：无 tmux 也能查日志，按参与者过滤后再取最近 n 条', (t) => {
+  const fs = require('fs');
+  const path = require('path');
+  const { spawnSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'chv-bridge-log-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const rows = [
+    { id: 'old', from: 'hearth', toName: 'claude' },
+    { id: 'incoming', from: 'codex', toName: 'hearth', toSession: 'fire', to: '%7' },
+    { id: 'outgoing', from: 'hearth', toName: 'codex' },
+    { id: 'unrelated', from: 'claude', toName: 'codex' },
+  ].map((row) => ({ ts: '2026-11-16', status: 'sent', kind: 'note', body: 'hello', ...row }));
+  fs.writeFileSync(path.join(dir, 'log.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  function log(...args) {
+    const result = spawnSync(process.execPath, [path.resolve(__dirname, '../tools/bridge.js'), 'log', ...args], {
+      encoding: 'utf8', env: { ...process.env, AGBRIDGE_DIR: dir, PATH: dir, TMUX_PANE: '' },
+    });
+    assert.ifError(result.error);
+    assert.strictEqual(result.status, 0, result.stderr);
+    return result.stdout;
+  }
+  assert.match(log('1'), /#unrelated /);
+  const filtered = log('2', '--for', 'hearth');
+  assert.match(filtered, /#incoming /);
+  assert.match(filtered, /#outgoing /);
+  assert.doesNotMatch(filtered, /#old |#unrelated /);
+  assert.strictEqual(log('2', '--me', '--from', 'hearth'), filtered);
+  assert.match(log('--for', 'fire'), /#incoming /);
+  assert.match(log('--for', '%7'), /#incoming /);
 });
 
 test('nameOf：agent 名唯一用 agent 名，同类多个用会话名', () => {

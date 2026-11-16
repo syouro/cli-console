@@ -8,7 +8,7 @@
 //   agbridge list                          列出 agent 窗格与空闲状态
 //   agbridge send <to> ask|note "正文"     to = claude|codex|agy|会话名|%N
 //   agbridge send <to> reply <re-id> "正文"
-//   agbridge log [n]                       最近 n 条投递记录
+//   agbridge log [n] [--me|--for <name>]    最近 n 条投递记录，可按参与者筛选
 // 正文也可以 --file <path> 或走 stdin（正文参数为 - ）。
 // 默认对方忙就后台排队等空闲再投；--sync 前台等；--now 不等直接敲。
 
@@ -23,7 +23,7 @@ const { paneState, tmuxPaste } = require(path.join(__dirname, '..', 'server.js')
 const HOME = process.env.AGBRIDGE_DIR || path.join(os.userInfo().homedir, '.agent-bridge');
 const SEQ = path.join(HOME, 'seq.json');
 const LOG = path.join(HOME, 'log.jsonl');
-const AGENT_RE = /(^|\/)(claude|codex|antigravity|agy|gemini)(\s|$|\.js)/;
+const AGENT_RE = /(^|\/|\s)(claude|codex|antigravity|agy|gemini|hearth|firekeeper|experience(?:-main)?)(\s|$|\.js|\.mjs)/i;
 const KINDS = new Set(['ask', 'note', 'reply']);
 const MAX_LEN = 10000;         // 与 /api/tmux/send 同款上限
 const WAIT_MAX_MS = 30 * 60e3; // 排队最长半小时，超时放弃并记 log
@@ -51,7 +51,12 @@ function agentOf(pid) {
     let cmd = '';
     try { cmd = fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').replace(/\0/g, ' ').trim(); } catch { continue; }
     const m = cmd.match(AGENT_RE);
-    if (m) return m[2] === 'antigravity' || m[2] === 'gemini' ? 'agy' : m[2];
+    if (m) {
+      const name = m[2].toLowerCase();
+      if (name === 'antigravity' || name === 'gemini') return 'agy';
+      if (name === 'firekeeper' || name.startsWith('experience')) return 'hearth';
+      return name;
+    }
   }
   return '';
 }
@@ -139,7 +144,7 @@ function parseArgs(argv) {
   const opt = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--file' || a === '--from') opt[a.slice(2)] = argv[++i];
+    if (a === '--file' || a === '--from' || a === '--for') opt[a.slice(2)] = argv[++i];
     else if (a.startsWith('--')) opt[a.slice(2)] = true;
     else opt._.push(a);
   }
@@ -193,15 +198,29 @@ async function cmdSend(opt) {
   console.log(`对方正「${st}」，已排队 #${m.id} → ${dst.session} (${dst.id})，空闲后自动送达`);
 }
 
-function cmdLog(n) {
+async function cmdLog(opt) {
   let lines = [];
   try { lines = fs.readFileSync(LOG, 'utf8').trim().split('\n'); } catch { /* 无记录 */ }
-  for (const l of lines.slice(-(n || 20))) {
+  let filter = opt.for || '';
+  if (opt.me) {
+    const all = opt.from || !process.env.TMUX_PANE ? [] : await panes();
+    filter = whoAmI(all, opt).name;
+  }
+  const n = +opt._[1] || 20;
+  const filtered = [];
+  for (const l of lines) {
     try {
       const o = JSON.parse(l);
-      const first = String(o.body || '').split('\n')[0].slice(0, 60);
-      console.log(`${o.ts}  ${o.status.padEnd(6)}  #${o.id}  ${o.from}→${o.toName}  ${o.kind}${o.re ? ' re=' + o.re : ''}  ${first}`);
-    } catch { console.log(l); }
+      if (filter) {
+        if (o.from !== filter && o.toName !== filter && o.toSession !== filter && o.to !== filter) continue;
+      }
+      filtered.push(o);
+    } catch { if (!filter) filtered.push(l); }
+  }
+  for (const o of filtered.slice(-n)) {
+    if (typeof o === 'string') { console.log(o); continue; }
+    const first = String(o.body || '').split('\n')[0].slice(0, 60);
+    console.log(`${o.ts}  ${o.status.padEnd(6)}  #${o.id}  ${o.from}→${o.toName}  ${o.kind}${o.re ? ' re=' + o.re : ''}  ${first}`);
   }
 }
 
@@ -211,7 +230,7 @@ async function main() {
   const cmd = opt._[0];
   if (cmd === 'list' || cmd === 'ls') return cmdList();
   if (cmd === 'send') return cmdSend(opt);
-  if (cmd === 'log') return cmdLog(+opt._[1] || 20);
+  if (cmd === 'log') return cmdLog(opt);
   console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 14).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   process.exitCode = cmd ? 1 : 0;
 }
