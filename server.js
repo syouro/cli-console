@@ -2178,6 +2178,19 @@ mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
 .msg.flash .bubble{outline:2px solid var(--accent);transition:outline-color 1.5s}
 .msg.user .bubble{background:var(--user)}
 .msg.assistant .bubble{background:var(--assist)}
+.msg.has-copy{position:relative;padding-right:34px}
+.msg-copy{position:absolute;top:6px;right:0;display:flex;align-items:center;justify-content:center;
+  width:28px;height:28px;padding:6px;border:0;border-radius:7px;background:transparent;
+  color:var(--muted);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .15s,background .15s}
+.msg-copy svg{display:block;width:16px;height:16px;flex-shrink:0}
+.msg:hover .msg-copy,.msg:focus-within .msg-copy,.msg-copy[data-state="done"],.msg-copy[data-state="error"]{
+  opacity:1;pointer-events:auto}
+.msg-copy:hover,.msg-copy:focus-visible{background:var(--accent-soft);color:var(--accent)}
+.msg-copy:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.msg-copy[data-state="done"]{color:var(--accent)}
+.msg-copy[data-state="error"]{color:#d64545}
+.msg-copy:disabled{cursor:default}
+@media (hover:none),(pointer:coarse){.msg-copy{opacity:1;pointer-events:auto;width:32px;height:32px}}
 .block{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
 .block+.block{margin-top:10px}
 details.think,details.tool{border-radius:8px;font-size:12.5px}
@@ -2527,7 +2540,7 @@ details.pack{background:var(--accent-soft);border-radius:8px;font-size:12.5px}
       <button class="ckey" data-k="Left" title="←">←</button>
       <button class="ckey" data-k="Right" title="→">→</button>
       <button class="ckey" data-k="Enter" title="回车确认">⏎</button>
-      <button class="ckey" id="cattach" title="上传图片/文件到文件区，把路径填进输入框">📎</button>
+      <button class="ckey" id="cattach" title="选择图片或文件，上传后点发送">📎 上传</button>
       <input type="file" id="cfile" multiple style="display:none">
       <button id="cterm" title="打开终端画面">▣</button>
     </div>

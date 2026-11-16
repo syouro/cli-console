@@ -811,6 +811,35 @@ function toolView(name, inp, terms) {
 }
 
 // ---------- 消息 ----------
+// 直接复制数据中的正文，避免从渲染后的 DOM 取文本时丢失 Markdown 和代码缩进。
+async function copyMessageText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try { await navigator.clipboard.writeText(text); return; }
+    catch (e) { /* HTTP / WebView 或权限受限时回退到选中文本复制 */ }
+  }
+  var active = document.activeElement, selection = window.getSelection();
+  var ranges = [];
+  if (selection) {
+    for (var i = 0; i < selection.rangeCount; i++) ranges.push(selection.getRangeAt(i).cloneRange());
+  }
+  var field = document.createElement('textarea');
+  field.value = text;
+  field.readOnly = true;
+  field.style.cssText = 'position:fixed;top:0;left:-9999px;font-size:16px';
+  document.body.appendChild(field);
+  try {
+    field.focus({ preventScroll: true });
+    field.select();
+    if (!document.execCommand('copy')) throw new Error('copy failed');
+  } finally {
+    field.remove();
+    if (active && active.isConnected) active.focus({ preventScroll: true });
+    if (selection) {
+      selection.removeAllRanges();
+      ranges.forEach(function (range) { selection.addRange(range); });
+    }
+  }
+}
 function msgEl(m, terms, side, idx) {
   if (m.blocks.length === 1 && m.blocks[0].kind === 'compact') {
     var dv = document.createElement('div'); dv.className = 'divider';
@@ -851,6 +880,36 @@ function msgEl(m, terms, side, idx) {
   }
   el.innerHTML = '<div class="who ' + m.role + '">' + who + '</div><div class="bubble">' +
     anchor + inner + '</div>';
+  var text = m.blocks.filter(function (b) { return b.kind === 'text'; })
+    .map(function (b) { return b.text; }).join('\n\n');
+  if (text) {
+    el.classList.add('has-copy');
+    var copy = document.createElement('button');
+    copy.type = 'button'; copy.className = 'msg-copy';
+    var icons = {
+      idle: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+      done: '<path d="m5 12 4 4L19 6"/>',
+      error: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/>'
+    };
+    function showCopyState(state) {
+      var label = state === 'done' ? '已复制' : state === 'error' ? '复制失败，点击重试' : '复制原文';
+      copy.dataset.state = state;
+      copy.title = label;
+      copy.setAttribute('aria-label', label);
+      copy.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" ' +
+        'aria-hidden="true" focusable="false">' + icons[state] + '</svg>';
+    }
+    showCopyState('idle');
+    copy.setAttribute('aria-live', 'polite');
+    copy.onclick = async function () {
+      copy.disabled = true;
+      try { await copyMessageText(text); showCopyState('done'); }
+      catch (e) { showCopyState('error'); }
+      setTimeout(function () { showCopyState('idle'); copy.disabled = false; }, 1500);
+    };
+    el.appendChild(copy);
+  }
   return el;
 }
 // 锚点按钮：事件委托，复制 #s= 直达链接
@@ -1988,7 +2047,7 @@ function tsName() {
 }
 async function composerUpload(files) {
   if (!files.length) return;
-  var btn = $('#cattach'); btn.textContent = '⏳';
+  var btn = $('#cattach'); btn.textContent = '⏳ 上传中…';
   try {
     var paths = [];
     for (var i = 0; i < files.length; i++) {
@@ -2011,7 +2070,7 @@ async function composerUpload(files) {
       t.value += sep + paths.join(' ') + ' ';
       t.focus();
     }
-  } finally { btn.textContent = '📎'; }
+  } finally { btn.textContent = '📎 上传'; }
 }
 $('#cattach').onclick = function () { $('#cfile').click(); };
 $('#cfile').onchange = function () {
@@ -2031,7 +2090,7 @@ $('#cin').addEventListener('drop', function (e) {
   e.preventDefault();
   composerUpload(Array.prototype.slice.call(fl));
 });
-document.querySelectorAll('#composer .ckey').forEach(function (b) {
+document.querySelectorAll('#composer .ckey[data-k]').forEach(function (b) {
   b.onclick = function () { sendTmux({ keys: [b.dataset.k] }); };
 });
 $('#ckill').onclick = async function () { // 会话头部直接关掉对应的 tmux 窗格，不用切去终端页
