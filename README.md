@@ -110,6 +110,8 @@ agbridge log                                   # 投递记录
 
 选一台所有参与机器都能访问的主机运行中转。各机安装同一版 agbridge，只需能主动连到中转的 TCP 端口。中转和节点都可以放在 tmux 会话里持续运行。
 
+`agbridge up` 只发现已有的 tmux 窗格。没有 tmux 会话时机器也可以上线，此时清单中有机器名，agent 数量为零。手动打开或关闭 agent 后，清单随下一次心跳更新。
+
 ```bash
 # 中转机，默认监听 TCP 7432
 agbridge relay 7432

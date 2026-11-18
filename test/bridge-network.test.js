@@ -24,10 +24,18 @@ async function until(check, timeout = 15000) {
 test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 ID 重连', {
   skip: process.platform !== 'linux' || spawnSync('tmux', ['-V']).status !== 0
 }, async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-net-'));
+  const dir = fs.mkdtempSync(path.resolve(os.tmpdir(), 'bridge-net-'));
   const cleanup = [];
   t.after(async () => { for (const fn of cleanup.reverse()) await fn(); });
   cleanup.push(() => fs.rmSync(dir, { force: true, recursive: true }));
+  const tmux = (await exec('sh', ['-c', 'command -v tmux'])).stdout.trim();
+  assert.ok(path.isAbsolute(tmux));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  // Covers agbridge and server.js helpers. PATH contains only this wrapper so
+  // even deleting the wrapper cannot redirect a later command to system tmux.
+  fs.writeFileSync(path.join(bin, 'tmux'),
+    '#!/bin/sh\nexec "${TEST_TMUX:?}" -S "${TEST_SOCKET:?}" "$@"\n', { mode: 0o700 });
   const group = crypto.randomBytes(32).toString('hex');
   const server = makeRelay(group);
   server.listen(0, '127.0.0.1');
@@ -37,22 +45,31 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
   const query = { host: '127.0.0.1', port, group };
   await assert.rejects(call({ ...query, group: '0'.repeat(64) }, 'list'));
 
-  async function node(name) {
+  async function node(name, fallbackSocket) {
     const home = path.join(dir, name);
     fs.mkdirSync(home);
-    const env = { ...process.env, TMUX_TMPDIR: home, AGBRIDGE_DIR: home, TMUX_PANE: '', TMUX: '' };
+    const socketDir = path.join(home, 'sockets');
+    const socket = path.join(socketDir, 'tmux.sock');
+    const env = { ...process.env, PATH: bin, TEST_TMUX: tmux, TEST_SOCKET: socket,
+      AGBRIDGE_DIR: home, TMUX_PANE: '', TMUX_TMPDIR: dir, TMUX: fallbackSocket ? fallbackSocket + ',0,0' : '' };
     const app = path.join(home, 'codex.js');
     const inbox = path.join(home, 'inbox');
     fs.writeFileSync(app, `process.stdin.setRawMode(true);
       function draw() {
+        if (!require('node:fs').existsSync(__filename)) process.exit(0);
         process.stdout.write('\\x1b[2J\\x1b[H' + (require('node:fs').existsSync(${JSON.stringify(path.join(home, 'busy'))}) ? '⣯ Generating…' : '› '));
       }
       draw();
       setInterval(draw, 100);
       process.stdin.on('data', data => require('node:fs').appendFileSync(${JSON.stringify(inbox)}, data));
     `);
-    await exec('tmux', ['new-session', '-d', '-s', name, process.execPath, app], { env });
-    cleanup.push(() => spawnSync('tmux', ['kill-server'], { env }));
+    async function openPane() {
+      fs.mkdirSync(socketDir);
+      await exec(tmux, ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', name, process.execPath, app], { env });
+    }
+    // The fixture exits its own process and tmux closes the last session.
+    const closePane = () => fs.rmSync(app, { force: true });
+    cleanup.push(closePane);
     const joined = exec(process.execPath, [cli, 'join', '127.0.0.1:' + port, name], { env });
     joined.child.stdin.end(group + '\n');
     await joined;
@@ -70,13 +87,20 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
     }
     up();
     cleanup.push(down);
-    return { id: machineId(config.key), inbox, up, down, home, signal: sig => worker.kill(sig),
+    return { id: machineId(config.key), inbox, up, down, home, socket, socketDir, openPane, closePane,
+      signal: sig => worker.kill(sig),
       run: async (...args) => (await exec(process.execPath, [cli, ...args],
         { env: { ...env, TMUX_PANE: '%0' } })).stdout };
   }
 
-  const a = await node('desk'), b = await node('lab');
+  const a = await node('desk');
   const nodes = () => call(query, 'list');
+  await until(async () => (await nodes()).some(n => n.id === a.id && !n.agents.length));
+  assert.match(await a.run('list'), /没有找到 agent 窗格/);
+  assert.equal(fs.existsSync(a.socket), false);
+  await a.openPane();
+  const b = await node('lab', a.socket);
+  await b.openPane();
   await until(async () => (await nodes()).filter(n => n.agents.some(p => p.state === 'idle')).length === 2);
   assert.match(await a.run('list'), /lab\/%0\s+lab\s+codex\s+idle/);
   const body = '第一行\nsecond line with "quotes"';
@@ -106,4 +130,17 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
   await assert.rejects(a.run('send', 'lab/codex', 'note', 'offline'), /未上线/);
   b.up();
   await until(async () => (await nodes()).some(n => n.id === b.id && n.agents.length));
+
+  fs.writeFileSync(path.join(b.home, 'busy'), '');
+  await until(async () => (await nodes()).find(n => n.id === b.id)?.agents[0]?.state === 'busy');
+  const queued = (await a.run('send', 'lab/%0', 'note', 'pane-closing')).match(/已排队 #(net-\d+)/)[1];
+  b.closePane();
+  await until(async () => new RegExp('gone +#' + queued + ' ').test(await b.run('log')));
+  await until(async () => (await nodes()).some(n => n.id === b.id && !n.agents.length));
+  fs.rmSync(b.socketDir, { recursive: true });
+  await assert.rejects(a.run('send', 'lab/%0', 'note', 'gone'), /找不到收件人/);
+  const listing = await b.run('list');
+  assert.doesNotMatch(listing, /^%\d+\s/m); // No local panes, despite TMUX pointing to desk.
+  assert.match(listing, /desk\/%0\s+desk\s+codex/);
+  assert.equal(fs.existsSync(b.socketDir), false);
 });

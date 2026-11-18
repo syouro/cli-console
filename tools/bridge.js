@@ -78,7 +78,12 @@ function agentOf(pid, foregroundOnly) {
 async function panes(foregroundOnly = false) {
   const fmt = ['#{pane_id}', '#{session_name}', '#{window_index}', '#{pane_index}',
     '#{pane_current_command}', '#{pane_current_path}', '#{pane_pid}'].join('␟');
-  const out = await tmux(['list-panes', '-a', '-F', fmt]);
+  let out;
+  try { out = await tmux(['list-panes', '-a', '-F', fmt]); }
+  catch (e) {
+    if (/^no server running on |^error connecting to .* \(No such file or directory\)$/i.test(e.message)) return [];
+    throw e;
+  }
   return out.split('\n').filter(Boolean).map((l) => {
     const [id, session, win, idx, cmd, cwd, pid] = l.split('␟');
     return { id, session, target: `${session}:${win}.${idx}`, cmd, cwd, pid: +pid, ...agentOf(+pid, foregroundOnly) };
@@ -179,12 +184,7 @@ function readBody(opt, rest) {
 }
 
 async function agentRows(foregroundOnly = false) {
-  let all;
-  try { all = await panes(foregroundOnly); }
-  catch (e) {
-    if (/no server running|no such file or directory/i.test(e.message)) return [];
-    throw e;
-  }
+  const all = await panes(foregroundOnly);
   return Promise.all(all.filter(p => p.agent).map(async p => ({
     id: p.id, session: p.session, agent: p.agent, state: await stateOf(p.id), cwd: p.cwd
   })));

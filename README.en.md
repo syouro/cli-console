@@ -110,6 +110,8 @@ agbridge log                                   # delivery log
 
 Run a relay on one host reachable by all participants. Install the same agbridge version on each Linux/tmux machine. Nodes make outbound connections to the relay.
 
+`agbridge up` discovers existing tmux panes. A machine with no tmux sessions stays online with zero agents. Opening or closing an agent updates the directory at the next heartbeat.
+
 ```bash
 agbridge relay 7432                        # keep running on the relay host
 agbridge invite                            # in a second terminal, get the private group code
