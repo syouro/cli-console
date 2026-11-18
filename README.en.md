@@ -1,14 +1,14 @@
-# Claude History Viewer
+# cli-console
 
 English | [中文](README.md)
 
-A zero-dependency, single-file Node.js web viewer for your Claude Code conversation history under `~/.claude/projects/`. Password-protected, safe to expose through a reverse proxy.
+A zero-dependency, single-file Node.js console for **Claude Code / Codex / agy (Antigravity CLI)** conversation history, mobile `tmux` remote control, and `agbridge` agent-to-agent messaging. Password-protected, safe to expose through a reverse proxy.
 
 ## Quick start
 
 ```bash
 node server.js
-# → Claude 历史查看器：http://127.0.0.1:48213
+# → CLI Console：http://127.0.0.1:48213
 # A random login password is generated on first run and printed once
 # (also persisted to secret.json)
 ```
@@ -18,9 +18,9 @@ Open `http://127.0.0.1:48213`, log in with the generated password.
 To keep it running with pm2:
 
 ```bash
-COOKIE_PATH=/history/ SECURE_COOKIE=1 pm2 start server.js --name claude-history
+COOKIE_PATH=/history/ SECURE_COOKIE=1 pm2 start server.js --name cli-console
 pm2 save
-pm2 restart claude-history   # after code changes
+pm2 restart cli-console   # after code changes
 ```
 
 ## Features
@@ -30,7 +30,7 @@ pm2 restart claude-history   # after code changes
 - **Filters** — project dropdown, time range (today / 7 / 30 / 90 days / 6 months / 1 year / custom start–end dates), and an “include thinking” toggle for search
 - **Paged loading** — a session opens with its latest 80 messages, viewed from the bottom; scrolling up loads earlier messages on demand
 - **Live tracking** — sessions written to within 2 minutes get a pulsing “in progress” badge; an open session polls for new messages and appends them incrementally, auto-following when you are at the bottom
-- **tmux bridge** (optional, off by default) — remote-control a running Claude Code from your phone. The backend captures the terminal and parses it into an interaction state; the frontend renders native controls: send a message, tap to answer a permission/choice prompt, <kbd>Esc</kbd> to interrupt, <kbd>⇧⇥</kbd> to cycle permission modes (the button shows the current mode). A ▣ console lists panes, shows a raw ANSI terminal as a fallback, and can create / kill sessions from the web. See the dedicated section below
+- **tmux bridge** (optional, off by default) — remote-control running Claude Code / Codex / agy sessions from your phone. The backend captures the terminal and parses it into an interaction state; the frontend renders native controls: send a message, tap to answer a permission/choice prompt, <kbd>Esc</kbd> to interrupt, <kbd>⇧⇥</kbd> to cycle permission modes (the button shows the current mode). A ▣ console lists panes, shows a raw ANSI terminal as a fallback, and can create / kill sessions from the web. See the dedicated section below
 - **Multiple agent CLIs** — besides Claude Code, sidebar tabs for **Codex** (`~/.codex/sessions`) and **Agy** (Google Antigravity CLI, `~/.gemini/antigravity-cli`) history: the same list / search / stats / favorites / sharing / export / delete, with tool-aware rendering per CLI. Each tab appears automatically when its directory exists. (Agy transcripts carry no token usage, and long compacted conversations may be missing their beginning)
 - **Subagent sidechains** — `<sessionId>/subagents/agent-*.jsonl` files are parsed separately; chips above the conversation switch between the main thread and each subagent
 - **Compaction awareness** — `summary` lines, `isCompactSummary` messages, and `compact_boundary` markers render as a summary banner, a collapsible block, and a divider respectively
@@ -57,22 +57,30 @@ All settings live in `config.json` (every key optional); environment variables a
   "host": "127.0.0.1",
   "cookiePath": "/history/",
   "secureCookie": true,
-  "tmux": true
+  "tmux": true,
+  "codexRoots": ["~/.codex/sessions"],
+  "codex": true,
+  "agyRoots": ["~/.gemini/antigravity-cli"],
+  "agy": true
 }
 ```
 
 - `roots` — one or more directories to scan; when the same project+session exists in several roots, the first root wins
 - `exclude` — glob patterns (`*` `?`) matched against project directory names; excluded projects are hidden from the list *and* rejected by the API
 - `tmux` — enable the tmux bridge (off by default; see below)
+- `codexRoots` — Codex session root directories (`sessions/YYYY/MM/DD/rollout-*.jsonl`), defaults to `~/.codex/sessions`
+- `codex` — explicitly enable/disable the Codex tab (enabled by default when the directory exists)
+- `agyRoots` — agy (Antigravity CLI) data root directories, defaults to `~/.gemini/antigravity-cli`
+- `agy` — explicitly enable/disable the Agy tab (enabled by default when the directory exists)
 - Use `CONFIG_PATH` to point at a different config file (default `./config.json`)
 
-## tmux bridge (remote-control Claude Code from your phone)
+## tmux bridge (remote-control running agent CLIs from your phone)
 
 Once enabled (`"tmux": true`, or the `TMUX_UI=1` env var), a logged-in user can:
 
-- **Composer bar at the bottom of a session view** — when the session's cwd matches a tmux pane (a `claude` process is preferred), you can message the running Claude Code directly. Permission / choice prompts are parsed into **native buttons** — one tap to answer. A busy state is shown, with <kbd>Esc</kbd> to interrupt and <kbd>⇧⇥</kbd> to cycle permission modes (the button shows the current mode). Combined with live tracking, this is a full remote Claude client in the browser.
+- **Composer bar at the bottom of a session view** — when the session matches or is bound to a tmux pane (supporting Claude Code / Codex / agy), you can message the running CLI directly. Permission / choice prompts are parsed into **native buttons** — one tap to answer. A busy state is shown, with <kbd>Esc</kbd> to interrupt and <kbd>⇧⇥</kbd> to cycle permission modes (the button shows the current mode). Combined with live tracking, this is a full remote console in the browser.
 - **▣ tmux console** (sidebar icon) — list every tmux pane and open any pane's raw terminal (ANSI colors, polled every 1.5 s). The same composer bar sends text and common keys.
-- **Create / kill sessions from the web** — spin up a new tmux session (pick a directory with autocomplete from your history, optionally a startup command — type `claude` to launch a fresh Claude Code); a pane card's ✕ kills it (with confirmation). A startup command falls back to a shell on exit, so the session isn't lost.
+- **Create / kill sessions from the web** — spin up a new tmux session (pick a directory with autocomplete from your history, optionally a startup command — e.g. `claude`, `codex`, or `agy`); a pane card's ✕ kills it (with confirmation). A startup command falls back to a shell on exit, so the session isn't lost.
 
 Security: the three `/api/tmux*` routes are login-only (share tokens rejected), named keys go through a whitelist, and the whole feature is off unless explicitly enabled. It effectively grants remote command execution to logged-in users, so use a strong password and serve over https.
 
@@ -143,7 +151,12 @@ Share the TLS group code only with trusted participants. Members can list agents
 | `VIEWER_PASSWORD` | — | Overrides the password stored in `secret.json` |
 | `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Overrides `roots` entirely (single directory) |
 | `CONFIG_PATH` | `./config.json` | Config file location |
+| `INDEX_PATH` | `./index.json` | Session summary index file location |
+| `INDEX_BLOBS_PATH` | `./index.blobs.json` | Search blob index file location |
+| `BLOB_TTL_MS` | `300000` | How long idle search blobs stay in memory (ms) |
 | `TMUX_UI` | `0` | Enable the tmux bridge (not `TMUX`: tmux injects that name into child processes) |
+| `CODEX_SESSIONS_DIR` | `~/.codex/sessions` | Overrides `codexRoots` entirely (single directory) |
+| `AGY_DIR` | `~/.gemini/antigravity-cli` | Overrides `agyRoots` entirely (single directory) |
 
 ## Files
 
@@ -205,7 +218,7 @@ location /history/ {
 
 ## Android shell app
 
-`android/` contains a minimal WebView shell (pure Android SDK, no third-party deps) that wraps the viewer as a phone app:
+`android/` contains a minimal WebView shell (pure Android SDK, no third-party deps) that wraps the console as a phone app:
 
 - **Get the APK**: push a tag (`git tag v1.0 && git push --tags`) and GitHub Actions builds it and attaches it to the Release; or trigger the workflow manually and grab the artifact.
 - **First launch** asks for your server URL (e.g. `https://your.domain/history/`); the login cookie persists.

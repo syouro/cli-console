@@ -11,5 +11,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = 'claude-history-shell'
+rootProject.name = 'cli-console-shell'
 include ':app'

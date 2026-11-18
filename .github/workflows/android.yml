@@ -43,16 +43,16 @@ jobs:
         run: gradle -p android assembleRelease
 
       - name: Collect APK
-        run: cp android/app/build/outputs/apk/release/app-release.apk claude-history-viewer.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk cli-console.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: claude-history-viewer-apk
-          path: claude-history-viewer.apk
+          name: cli-console-apk
+          path: cli-console.apk
 
       - name: Publish release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: claude-history-viewer.apk
+          files: cli-console.apk
           generate_release_notes: true

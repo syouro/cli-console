@@ -1,6 +1,6 @@
-# CLAUDE.md — claude-history-viewer
+# CLAUDE.md — cli-console
 
-浏览 `~/.claude/projects/` 下 Claude 对话历史的单文件 Web 服务。带登录鉴权，经反代公网访问。
+统一浏览 Claude Code / Codex / agy 对话历史，并提供网页端 tmux 远程操控与 agbridge 多 agent 互通的单文件 Web 服务。带登录鉴权，经反代公网访问。
 
 ## 硬约束
 
@@ -193,8 +193,8 @@
 
 ```bash
 # 生产（pm2 常驻）
-COOKIE_PATH=/history/ SECURE_COOKIE=1 pm2 start server.js --name claude-history
-pm2 restart claude-history      # 改代码后
+COOKIE_PATH=/history/ SECURE_COOKIE=1 pm2 start server.js --name cli-console
+pm2 restart cli-console         # 改代码后
 
 # 本地 http 调试（cookie 去掉 Secure、放开 Path）
 SECURE_COOKIE=0 COOKIE_PATH=/ PORT=48999 node server.js

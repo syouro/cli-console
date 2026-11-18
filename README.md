@@ -1,8 +1,8 @@
-# Claude 对话历史查看器
+# cli-console
 
 [English](README.en.md) | 中文
 
-零依赖 Node 单文件服务，浏览 `~/.claude/projects/` 下的对话历史。带登录鉴权，可经反代公网访问。
+零依赖 Node 单文件控制台，统一浏览 **Claude Code / Codex / agy（Antigravity CLI）** 对话历史，提供手机端 `tmux` 远程操控与 `agbridge` 多 agent 互通。带登录鉴权，可经反代公网访问。
 
 ## 访问
 
@@ -20,9 +20,9 @@ node -e "console.log(require('./secret.json').password)"
 ## 运行（已用 pm2 常驻）
 
 ```bash
-COOKIE_PATH=/history/ SECURE_COOKIE=1 pm2 start server.js --name claude-history
+COOKIE_PATH=/history/ SECURE_COOKIE=1 pm2 start server.js --name cli-console
 pm2 save            # 已执行，开机自启
-pm2 restart claude-history   # 改代码后
+pm2 restart cli-console   # 改代码后
 ```
 
 ## 配置（config.json）
@@ -54,18 +54,18 @@ pm2 restart claude-history   # 改代码后
 - `agy` — 显式开 / 关 agy 页（缺省时目录存在即启用）
 - 配置文件路径可用 `CONFIG_PATH` 环境变量指定（默认 `./config.json`）
 
-## tmux 桥接（手机上远程操控 Claude Code）
+## tmux 桥接（手机上远程操控正在运行的 agent CLI）
 
 开启后（`"tmux": true` 或环境变量 `TMUX_UI=1`），登录用户可以：
 
-- **会话视图底部出现控制条**：当这段对话的 cwd 匹配到某个 tmux 窗格（优先 claude 进程）时，
-  可以直接给正在跑的 Claude Code 发消息；出现权限确认 / 选择菜单时，
+- **会话视图底部出现控制条**：当这段对话绑定或匹配到某个 tmux 窗格（覆盖 Claude Code / Codex / agy）时，
+  可以直接给正在跑的 CLI 发消息；出现权限确认 / 选择菜单时，
   自动解析成**原生按钮**，点一下即选择；忙碌时显示状态，Esc 一键打断。
-  配合已有的实时跟踪（live），在手机上就是一个完整的远程 Claude 客户端。
+  配合已有的实时跟踪（live），在手机上就是一个完整的远程控制台。
 - **▣ tmux 控制台**（侧栏图标）：列出所有 tmux 窗格，可打开任意窗格的裸终端画面
   （带 ANSI 颜色，1.5s 轮询），下方同一条控制条可发文本和常用按键。
 - **网页新建 / 关闭会话**：控制台里可直接拉起新 tmux 会话——选目录（带历史会话目录联想）、
-  可选启动命令（填 `claude` 就直接开一个新的 Claude Code），建好即进画面；
+  可选启动命令（填 `claude` / `codex` / `agy` 就直接开一个新会话），建好即进画面；
   窗格卡片上的 ✕ 可关闭窗格（二次确认）。启动命令退出后会落回 shell，不会把会话带没。
 
 安全：三条 `/api/tmux*` 路由仅登录会话可用（分享 token 不行），具名按键过白名单，
@@ -198,8 +198,8 @@ node --test        # test/ 下的 node:test 用例，零依赖
 - **筛选**：项目下拉 + 时间范围（今天 / 7 / 30 / 90 天 / 半年 / 一年 / 自定义起止日期）+「含思考」开关（把 thinking 纳入搜索）
 - **分页加载**：打开会话默认只取最近 80 条，从底部看起，上滚自动加载更早的
 - **实时跟踪**：2 分钟内有写入的会话标「● 进行中」；打开后自动轮询增量追加新消息，在底部时跟随滚动
-- **tmux 桥接**（可选，默认关闭）：手机上远程操控正在跑的 Claude Code——后端抓终端画面并解析成交互状态，前端渲染成原生控件：发消息、权限确认一键点选、<kbd>Esc</kbd> 打断、<kbd>⇧⇥</kbd> 切权限模式（按钮实时显示当前档位）；▣ 控制台可列窗格、看 ANSI 裸终端兜底、网页新建 / 关闭会话。详见下方专节
-- **Codex 页**：侧栏顶部 Claude / Codex 两个独立页签，也能浏览 codex CLI 的会话历史（`~/.codex/sessions`）——列表、搜索、统计、收藏、分享、导出、删除全套一致；exec_command / apply_patch（红绿补丁）/ update_plan 等工具调用做了友好渲染，思考摘要折叠展示，token 用量按模型统计；codex 内部子代理线程（审批评估等）不进列表
+- **tmux 桥接**（可选，默认关闭）：手机上远程操控正在跑的 Claude Code / Codex / agy——后端抓终端画面并解析成交互状态，前端渲染成原生控件：发消息、权限确认一键点选、<kbd>Esc</kbd> 打断、<kbd>⇧⇥</kbd> 切权限模式（按钮实时显示当前档位）；▣ 控制台可列窗格、看 ANSI 裸终端兜底、网页新建 / 关闭会话。详见下方专节
+- **Codex 页**：侧栏顶部独立页签，也能浏览 codex CLI 的会话历史（`~/.codex/sessions`）——列表、搜索、统计、收藏、分享、导出、删除全套一致；exec_command / apply_patch（红绿补丁）/ update_plan 等工具调用做了友好渲染，思考摘要折叠展示，token 用量按模型统计；codex 内部子代理线程（审批评估等）不进列表
 - **Agy 页**：同样的第三个页签，浏览 agy（Google Antigravity CLI）的会话历史（`~/.gemini/antigravity-cli`，读 CLI 导出的 transcript JSONL；主存储是 SQLite+protobuf，零依赖读不动）——功能同上；view_file / run_command / replace_file_content 等工具做了友好渲染。局限：transcript 没有 token 用量（统计恒为零），被压缩过的超长会话可能缺开头
 - **子代理侧链**：`<sessionId>/subagents/agent-*.jsonl` 单独解析，顶部 chips 切换主对话 / 各子代理
 - **压缩续接**：`summary` 行、`isCompactSummary` 消息、`compact_boundary` 边界分别渲染为摘要横幅 / 折叠块 / 分隔线
@@ -258,7 +258,7 @@ location /history/ {
 
 ## Android 壳子 App
 
-`android/` 下是一个极简 WebView 壳子（纯 Android SDK，无第三方依赖），把查看器包成手机 App：
+`android/` 下是一个极简 WebView 壳子（纯 Android SDK，无第三方依赖），把控制台包成手机 App：
 
 - **拿 APK**：打 tag（`git tag v1.0 && git push --tags`）后 GitHub Actions 自动构建并挂到
   Release；也可在 Actions 页手动 Run workflow，从 artifact 下载。

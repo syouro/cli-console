@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Claude 对话历史查看器 —— 零依赖，纯 Node 标准库。
-// 扫描 ~/.claude/projects/<项目>/<sessionId>.jsonl；带登录鉴权，可经反代公网访问。
+// cli-console —— 零依赖，纯 Node 标准库。
+// 统一浏览 Claude Code / Codex / agy 对话历史，支持网页端 tmux 远程操控；带登录鉴权，可经反代公网访问。
 'use strict';
 
 const http = require('http');
@@ -2043,7 +2043,7 @@ module.exports = {
 if (require.main === module) {
   const generated = loadConfig();
   server.listen(PORT, HOST, () => {
-    console.log(`Claude 历史查看器：http://${HOST}:${PORT}`);
+    console.log(`CLI Console：http://${HOST}:${PORT}`);
     console.log('  扫描根目录：' + ROOTS.join('，'));
     if (EXCLUDE.length) console.log('  排除规则：' + (USER_CFG.exclude || []).join('，'));
     console.log('  tmux 桥接：' + (TMUX_UI ? '已开启（网页可向 tmux 会话发送按键）' : '未开启'));
@@ -2072,7 +2072,7 @@ if (require.main === module) {
 // ---------- 前端（内嵌单页）----------
 const HTML = /* html */ `<!doctype html><html lang="zh"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content">
-<title>Claude 对话历史</title>
+<title>CLI Console</title>
 <style>
 :root{
   --bg:#f6f7f9;--panel:#fff;--ink:#1c2024;--muted:#7a828c;--line:#e6e8eb;
@@ -2481,7 +2481,7 @@ details.pack{background:var(--accent-soft);border-radius:8px;font-size:12.5px}
 
 <div id="login">
   <div class="card">
-    <h1><span class="dot"></span>Claude 对话历史</h1>
+    <h1><span class="dot"></span>CLI Console</h1>
     <p>请输入访问密码</p>
     <input id="lu" placeholder="用户名（管理员留空）" autocomplete="username">
     <input id="pw" type="password" placeholder="密码" autocomplete="current-password">
@@ -2496,7 +2496,7 @@ details.pack{background:var(--accent-soft);border-radius:8px;font-size:12.5px}
 <aside id="side" style="display:none">
   <header>
     <div class="hrow">
-      <h1><span class="dot"></span>Claude 对话历史</h1>
+      <h1><span class="dot"></span>CLI Console</h1>
       <div class="icons">
         <button class="iconbtn" id="termBtn" title="tmux 控制台" style="display:none">▣</button>
         <button class="iconbtn" id="filesBtn" title="文件（上传 md / 图片，在线编辑）" style="display:none">📁</button>
