@@ -207,7 +207,7 @@ async function relay(port) {
   const group = invite();
   if (!KEY.test(group)) throw new Error('中转加入码文件损坏');
   const server = makeRelay(group);
-  server.listen(port);
+  server.listen(port, process.env.AGBRIDGE_BIND || undefined);
   await once(server, 'listening');
   console.log('中转已启动，TCP 端口 ' + port + '。用 agbridge invite 查看加入码。');
 }

@@ -123,6 +123,8 @@ agbridge join relay.example.com:7432 lab
 agbridge up
 ```
 
+要让中转只监听 Tailscale 地址，可在中转机上用 `AGBRIDGE_BIND=100.x.y.z agbridge relay 7432` 启动，并让所有节点（含本机）通过这个地址加入。
+
 中转机也要收发消息时，在该机另开终端，执行 `agbridge invite | agbridge join 127.0.0.1:7432 hub`，然后运行 `agbridge up`。以后重启只需启动原来的 `relay` 和各机的 `up`。
 
 ```bash

@@ -126,6 +126,8 @@ agbridge send lab/%3 note "Build finished"
 
 To include the relay host's agents, run `agbridge invite | agbridge join 127.0.0.1:7432 hub` there and start `agbridge up`. After a restart, run the relay and node commands again. Each node generates its own private key on joining. Use `machineID/%pane` when names collide. For replies, use the envelope's full `from` address and its message ID without the leading `#`. When asking from outside an agent pane, use `--from %3` to select a local agent for replies.
 
+To bind only to a Tailscale address, start the relay with `AGBRIDGE_BIND=100.x.y.z agbridge relay 7432` and use that address when joining from any node, including the relay host.
+
 Nodes refresh their foreground agent listings about every five seconds and reconnect automatically. Disconnected nodes disappear on socket close or after about 20–25 seconds without a heartbeat. Busy panes queue messages in the receiving node process, which must stay running for delivery. Check `agbridge log` on the receiving host for the final status.
 
 Share the TLS group code only with trusted participants. Members can list agents and working directories and send messages to online agents. Group and machine credentials live in the system account's `~/.agent-bridge/` (override with `AGBRIDGE_DIR`). Run `join` separately on each machine. The relay keeps its online directory and in-flight messages in memory.
