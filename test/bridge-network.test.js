@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const tls = require('node:tls');
 const { execFile, spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { promisify } = require('node:util');
@@ -20,6 +21,26 @@ async function until(check, timeout = 15000) {
     await sleep(100);
   }
 }
+
+test('中转支持要求至少 3072 位 DH 的 TLS-PSK 客户端', async () => {
+  const group = crypto.randomBytes(32);
+  const server = makeRelay(group.toString('hex'));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const socket = tls.connect({
+    host: '127.0.0.1', port: server.address().port, maxVersion: 'TLSv1.2',
+    ciphers: 'DHE-PSK-AES128-GCM-SHA256', minDHSize: 3072,
+    pskCallback: () => ({ identity: 'agbridge-v1', psk: group }),
+    checkServerIdentity: () => undefined
+  });
+  try {
+    await once(socket, 'secureConnect');
+    assert.ok(socket.getEphemeralKeyInfo().size >= 3072);
+  } finally {
+    socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
 
 test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 ID 重连', {
   skip: process.platform !== 'linux' || spawnSync('tmux', ['-V']).status !== 0

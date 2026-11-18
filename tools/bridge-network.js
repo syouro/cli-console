@@ -142,7 +142,9 @@ async function call(config, method, data) {
 
 function makeRelay(group) {
   const nodes = new Map();
-  const server = tls.createServer({ ...tlsOptions, dhparam: 'auto', handshakeTimeout: RPC_TIMEOUT,
+  // OpenSSL's automatic DHE group on a certificate-free PSK server can be only 1024 bits.
+  const dhparam = fs.readFileSync(path.join(__dirname, 'bridge-ffdhe3072.pem'));
+  const server = tls.createServer({ ...tlsOptions, dhparam, handshakeTimeout: RPC_TIMEOUT,
     pskCallback: (_socket, identity) => identity === 'agbridge-v1' ? Buffer.from(group, 'hex') : null
   }, socket => {
     let node, deliveries = 0;
