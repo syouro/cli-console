@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 'use strict';
-// agbridge —— 同机 tmux 里的 agent CLI（claude / codex / agy）互发消息。
+// agbridge —— 本机与已加入网络的 tmux agent CLI（claude / codex / agy）互发消息。
 // 原理是「程序替你粘贴」：找到收件人窗格，等它空闲，把带信封头的正文括号粘贴进它的
 // 输入框再补回车；对方看到的就是一条开头写着「谁发的、几号、要不要回」的用户消息。
-// 不走 HTTP、不要鉴权（两边都是本机同一用户），零依赖，复用 server.js 的 paneState()。
+// 多机：relay [端口] 开中转，invite 查看加入码，join <host:port> [机器名] 加入，up 上线。
 //
 //   agbridge list                          列出 agent 窗格与空闲状态
-//   agbridge send <to> ask|note "正文"     to = claude|codex|agy|会话名|%N
+//   agbridge send <to> ask|note "正文"     to = agent 名、会话名、%N 或 机器/agent
 //   agbridge send <to> reply <re-id> "正文"
 //   agbridge log [n] [--me|--for <name>]    最近 n 条投递记录，可按参与者筛选
 // 正文也可以 --file <path> 或走 stdin（正文参数为 - ）。
@@ -15,6 +15,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('node:crypto');
+const network = require('./bridge-network.js');
 const { execFile, spawn } = require('child_process');
 const { paneState, tmuxPaste } = require(path.join(__dirname, '..', 'server.js'));
 
@@ -41,33 +43,45 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 窗格里跑的是哪家 CLI：看 pane_pid 自身及其子进程的 cmdline（codex 的进程名是 node，
 // 靠 pane_current_command 认不出来；exec 启动的 claude 没有子进程，得看自己）
-function agentOf(pid) {
+function agentOf(pid, foregroundOnly) {
   const pids = [pid];
   try {
     const kids = fs.readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim();
     if (kids) pids.push(...kids.split(/\s+/).map(Number));
   } catch { /* 无 /proc children 接口时只看自己 */ }
   for (const p of pids) {
-    let cmd = '';
-    try { cmd = fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').replace(/\0/g, ' ').trim(); } catch { continue; }
+    let cmd, identity;
+    try {
+      const argv = fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').split('\0');
+      cmd = argv.join(' ').trim();
+      if (foregroundOnly) {
+        const stat = fs.readFileSync(`/proc/${p}/stat`, 'utf8');
+        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        if (fields[2] !== fields[5] || +fields[5] <= 0) continue; // pgrp must own the tty
+        identity = p + '-' + fields[19]; // pid + kernel start time survives pane/shell reuse
+        const executable = path.basename(argv[0]);
+        cmd = /^(node|nodejs|bun|bash|sh)$/.test(executable) ? argv[1] || '' : argv[0];
+      }
+    } catch { continue; }
     const m = cmd.match(AGENT_RE);
     if (m) {
       const name = m[2].toLowerCase();
-      if (name === 'antigravity' || name === 'gemini') return 'agy';
-      if (name === 'firekeeper' || name.startsWith('experience')) return 'hearth';
-      return name;
+      let agent = name;
+      if (name === 'antigravity' || name === 'gemini') agent = 'agy';
+      if (name === 'firekeeper' || name.startsWith('experience')) agent = 'hearth';
+      return { agent, identity };
     }
   }
-  return '';
+  return { agent: '' };
 }
 
-async function panes() {
+async function panes(foregroundOnly = false) {
   const fmt = ['#{pane_id}', '#{session_name}', '#{window_index}', '#{pane_index}',
     '#{pane_current_command}', '#{pane_current_path}', '#{pane_pid}'].join('␟');
   const out = await tmux(['list-panes', '-a', '-F', fmt]);
   return out.split('\n').filter(Boolean).map((l) => {
     const [id, session, win, idx, cmd, cwd, pid] = l.split('␟');
-    return { id, session, target: `${session}:${win}.${idx}`, cmd, cwd, pid: +pid, agent: agentOf(+pid) };
+    return { id, session, target: `${session}:${win}.${idx}`, cmd, cwd, pid: +pid, ...agentOf(+pid, foregroundOnly) };
   });
 }
 
@@ -122,8 +136,7 @@ function envelope(m) {
 // 真正敲进去：等空闲 → 正文括号粘贴（tmuxPaste，不用 send-keys -l 逐字打）→ 停一拍 → Enter。
 // 逐字打的话 codex 靠按键间隔猜粘贴，几百字的正文它嚼完之前补的 Enter 全被当成换行吞掉，
 // 消息就一直挂在输入框里不发；括号粘贴有明确结束标记，紧跟的 Enter 才是一次干净的回车
-async function deliver(m, opt) {
-  const t0 = Date.now();
+async function deliver(m, opt, t0 = Date.now()) {
   let st = await stateOf(m.to);
   while (!opt.now && st !== 'idle' && st !== 'gone') {
     if (Date.now() - t0 > WAIT_MAX_MS) {
@@ -134,6 +147,13 @@ async function deliver(m, opt) {
     st = await stateOf(m.to);
   }
   if (st === 'gone') { logLine({ ...m, status: 'gone' }); throw new Error(`窗格 ${m.to} 已不存在`); }
+  if (m.remotePane) {
+    const current = (await panes(true)).find(p => p.id === m.to);
+    if (current?.identity !== m.remotePane) {
+      logLine({ ...m, status: 'gone' });
+      throw new Error('收件 agent 已退出或被替换');
+    }
+  }
   await tmuxPaste(m.to, envelope(m));
   await sleep(200);
   await tmux(['send-keys', '-t', m.to, 'Enter']);
@@ -158,12 +178,39 @@ function readBody(opt, rest) {
   return joined;
 }
 
+async function agentRows(foregroundOnly = false) {
+  let all;
+  try { all = await panes(foregroundOnly); }
+  catch (e) {
+    if (/no server running|no such file or directory/i.test(e.message)) return [];
+    throw e;
+  }
+  return Promise.all(all.filter(p => p.agent).map(async p => ({
+    id: p.id, session: p.session, agent: p.agent, state: await stateOf(p.id), cwd: p.cwd
+  })));
+}
+
 async function cmdList() {
-  const all = (await panes()).filter((p) => p.agent);
-  if (!all.length) { console.log('没有找到 agent 窗格'); return; }
+  const config = network.readConfig();
   const rows = [];
-  for (const p of all) rows.push([p.id, p.session, p.agent, await stateOf(p.id), p.cwd,
-    p.id === process.env.TMUX_PANE ? '← 我' : '']);
+  function add(agents, host, local) {
+    for (const p of agents) rows.push([host + p.id, p.session, p.agent, p.state, p.cwd,
+      local && p.id === process.env.TMUX_PANE ? '← 我' : '']);
+  }
+  add(await agentRows(), '', true);
+  if (config) {
+    try {
+      const nodes = await network.call(config, 'list');
+      for (const node of nodes) {
+        const local = node.id === network.machineId(config.key);
+        const host = nodes.filter(n => n.name === node.name).length > 1 ? node.id : node.name;
+        console.log(`${node.name}  ${node.id}  在线${local ? '（本机）' : ''}`);
+        if (!local) add(node.agents, host + '/', false);
+      }
+      if (!nodes.some(n => n.id === network.machineId(config.key))) console.error('本机尚未上线，运行 agbridge up');
+    } catch (e) { console.error('中转不可达：' + e.message); process.exitCode = 1; }
+  }
+  if (!rows.length) { console.log('没有找到 agent 窗格'); return; }
   const w = rows.reduce((a, r) => r.map((c, i) => Math.max(a[i] || 0, String(c).length)), []);
   for (const r of rows) console.log(r.map((c, i) => String(c).padEnd(w[i])).join('  ').trimEnd());
 }
@@ -179,23 +226,79 @@ async function cmdSend(opt) {
   const body = readBody(opt, rest).trim();
   if (!body) throw new Error('正文为空');
   if (body.length > MAX_LEN) throw new Error(`正文超过 ${MAX_LEN} 字`);
+  const config = to.includes('/') ? network.readConfig() : null;
+  if (config) {
+    const [host, target, ...extra] = to.split('/');
+    if (!host || !target || extra.length) throw new Error('跨机地址格式为 机器/agent');
+    const all = process.env.TMUX_PANE ? await panes() : [];
+    const me = whoAmI(all, opt);
+    const id = 'net-' + crypto.randomBytes(8).readBigUInt64BE().toString();
+    const message = { id, from: opt.from || me.pane || me.name, kind, re, body };
+    const result = await network.call(config, 'send', { key: config.key, host, target, message,
+      sync: !!opt.sync, now: !!opt.now });
+    logLine({ ...message, from: me.name, toName: to, status: result.status });
+    console.log(`${result.status === 'sent' ? '已送达' : '已排队'} #${id} → ${to}`);
+    return;
+  }
   const all = await panes();
   const me = whoAmI(all, opt);
   const dst = resolveTo(all, to, me.pane);
   const m = { id: nextSeq(me.name), from: me.name, to: dst.id, toName: nameOf(all, dst),
     toSession: dst.session, kind, re, body };
-  const st = await stateOf(dst.id);
-  if (st === 'idle' || opt.now || opt.sync) {
+  const result = await dispatch(m, opt);
+  console.log(`${result.status === 'sent' ? '已送达' : '已排队，空闲后自动送达'} #${m.id} → ${dst.session} (${dst.id})`);
+}
+
+async function dispatch(m, opt) {
+  const st = await stateOf(m.to);
+  if (st === 'idle' || st === 'gone' || opt.now || opt.sync) {
     await deliver(m, opt);
-    console.log(`已送达 #${m.id} → ${dst.session} (${dst.id})`);
-    return;
+    return { status: 'sent' };
   }
-  // 对方在忙：丢给一个脱离终端的子进程等它空闲再投，自己立刻返回，别卡住调用方的 Bash
   const child = spawn(process.execPath, [__filename, '--deliver', JSON.stringify(m)],
     { detached: true, stdio: 'ignore' });
+  await require('node:events').once(child, 'spawn');
   child.unref();
   logLine({ ...m, status: 'queued', lastState: st });
-  console.log(`对方正「${st}」，已排队 #${m.id} → ${dst.session} (${dst.id})，空闲后自动送达`);
+  return { status: 'queued' };
+}
+
+// Keep each remote envelope and its Enter together, including when several callers
+// find the same pane idle simultaneously. The node owns its in-memory queue.
+const remoteTails = new Map();
+async function dispatchRemote(m, opt) {
+  const start = Date.now();
+  const previous = remoteTails.get(m.to);
+  const state = previous ? Promise.resolve('queued') : stateOf(m.to);
+  const background = state.then(st => !opt.sync && (Boolean(previous) || (!opt.now && st !== 'idle' && st !== 'gone')));
+  const done = (async () => {
+    if (await background) logLine({ ...m, status: 'queued', lastState: await state });
+    if (previous) await previous;
+    await deliver(m, opt, start);
+  })();
+  const tail = done.catch(e => {
+    console.error(`#${m.id} 投递失败：${e.message}`);
+  }).finally(() => { if (remoteTails.get(m.to) === tail) remoteTails.delete(m.to); });
+  remoteTails.set(m.to, tail);
+  if (await background) return { status: 'queued' };
+  await done;
+  return { status: 'sent' };
+}
+
+async function receiveRemote({ sender, target, message, now, sync }, selfId) {
+  const { id, from, kind, re, body } = message;
+  if (!/^[a-f0-9]{24}$/.test(sender) || !/^net-\d+$/.test(id) || typeof from !== 'string'
+      || !/^[^\s/[\]\x00-\x1f\x7f]{1,128}$/u.test(from) || !KINDS.has(kind)
+      || (kind === 'reply' ? !/^[\w.-]+-\d+$/.test(re) : re !== '')
+      || typeof body !== 'string' || !body.trim() || body.length > MAX_LEN
+      || /[\x00-\x08\x0b-\x1f\x7f]/.test(body.replace(/\r\n/g, '\n'))) {
+    throw new Error('无效的跨机消息');
+  }
+  const all = (await panes(true)).filter(p => p.agent);
+  const dst = resolveTo(all, target, sender === selfId ? from : '');
+  const m = { id, from: sender + '/' + from, kind, re, body: body.replace(/\r\n/g, '\n'), to: dst.id,
+    toSession: dst.session, toName: nameOf(all, dst), remotePane: dst.identity };
+  return dispatchRemote(m, { now, sync });
 }
 
 async function cmdLog(opt) {
@@ -228,6 +331,23 @@ async function main() {
   const opt = parseArgs(process.argv.slice(2));
   if (opt.deliver) { await deliver(JSON.parse(opt._[0]), {}); return; } // 后台排队子进程入口
   const cmd = opt._[0];
+  if (cmd === 'relay') return network.relay(Number(opt._[1] ?? 7432));
+  if (cmd === 'invite') { console.log(network.invite()); return; }
+  if (cmd === 'join') {
+    const [, address, name = os.hostname()] = opt._;
+    if (!address) throw new Error('用法：agbridge join <中转地址:端口> [机器名]');
+    if (process.stdin.isTTY) process.stderr.write('输入中转机 agbridge invite 给出的加入码：');
+    const input = require('node:readline').createInterface({ input: process.stdin, terminal: false });
+    let group = '';
+    try { for await (const line of input) { group = line.trim(); break; } } finally { input.close(); }
+    console.log('本机 ID：' + (await network.join(address, name, group)) + '。运行 agbridge up 上线。');
+    return;
+  }
+  if (cmd === 'up') {
+    const config = network.readConfig();
+    if (!config) throw new Error('请先运行 agbridge join <中转地址:端口> [机器名]');
+    return network.runNode(config, () => agentRows(true), receiveRemote);
+  }
   if (cmd === 'list' || cmd === 'ls') return cmdList();
   if (cmd === 'send') return cmdSend(opt);
   if (cmd === 'log') return cmdLog(opt);

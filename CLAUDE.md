@@ -229,3 +229,5 @@ node --test        # test/ 下的 node:test 用例（纯函数 + parseSession + 
   要贴 `tools/bridge-protocol.md` 那段说明，否则会把 `[bridge]` 段当用户指令。
 - 认 CLI 靠 `/proc/<pane_pid>/…/cmdline`（codex 的 `pane_current_command` 是 node；
   exec 启动的 claude 没子进程，得看 pane_pid 自己）。
+
+- 多机互通由 `tools/bridge-network.js` 实现。`agbridge relay` 维护在线节点，`agbridge up` 通过 TLS 注册并上报心跳和前台 agent。跨机地址用 `机器/agent`，回复时照抄 `from`。收件节点按窗格串行投递，并在粘贴前复查 agent 进程身份。配置步骤见 README 的「多机互通」。

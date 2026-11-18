@@ -106,6 +106,33 @@ agbridge log                                   # 投递记录
   Codex 默认沙箱挡 tmux socket，发送需放开沙箱执行。
 - 状态在 `/root/.agent-bridge/`（按系统账号 home 定位、不看 `$HOME`，多账号 Claude 与 Codex 共用）。
 
+### 多机互通
+
+选一台所有参与机器都能访问的主机运行中转。各机安装同一版 agbridge，只需能主动连到中转的 TCP 端口。中转和节点都可以放在 tmux 会话里持续运行。
+
+```bash
+# 中转机，默认监听 TCP 7432
+agbridge relay 7432
+# 在另一个终端查看加入码，私下交给信任的参与者
+agbridge invite
+
+# 每台参与机器各执行一次 join，提示时粘贴加入码。lab 换成本机名字
+agbridge join relay.example.com:7432 lab
+agbridge up
+```
+
+中转机也要收发消息时，在该机另开终端，执行 `agbridge invite | agbridge join 127.0.0.1:7432 hub`，然后运行 `agbridge up`。以后重启只需启动原来的 `relay` 和各机的 `up`。
+
+```bash
+agbridge list                             # 在线机器、机器 ID、窗格和空闲状态
+agbridge send lab/codex ask "测试结果如何？"
+agbridge send lab/%3 note "构建已结束"
+```
+
+- 每台机器首次加入时生成独立的私有 KEY，清单显示从 KEY 派生的稳定 ID。同名机器用 `机器ID/%窗格号` 寻址。收到 `ask` 时，把信封里的完整 `from` 地址和去掉 `#` 的消息编号传给 `agbridge send <from> reply <编号> "回复"`。在 agent 窗格里发送可自动生成回信地址，从普通终端发起提问可用 `--from %3` 指定本机收回复的 agent。
+- 每台机器约每 5 秒上报一次本机前台 agent。正常断开会移出清单，丢失心跳的连接约 20–25 秒后移除。节点会自动重连。收件 agent 忙时，由收件机的 `up` 进程排队，保持该进程运行到投递完毕。两端可用 `agbridge log` 查记录，最终投递状态看收件机。
+- 加入码用于 TLS 加密连接的组认证，持码者可以看到该组的机器、agent 和工作目录，并向在线 agent 发消息。私有 KEY 和加入码保存在系统账号的 `~/.agent-bridge/`（可用 `AGBRIDGE_DIR` 覆盖），各机分别执行 `join` 以获得独立身份。中转只在内存中维护在线清单和转发中的消息。
+
 ## 环境变量（优先于 config.json）
 
 | 变量 | 默认 | 说明 |

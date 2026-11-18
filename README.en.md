@@ -106,6 +106,28 @@ agbridge log                                   # delivery log
 - Both sides need the protocol: paste `tools/bridge-protocol.md` into each CLI's global instructions (Claude `~/.claude/CLAUDE.md`, Codex `~/.codex/AGENTS.md`) and allow the command for Claude with `"permissions": { "allow": ["Bash(agbridge *)"] }` (auto mode blocks it otherwise). Codex's default sandbox blocks the tmux socket, so sends from Codex need to run outside the sandbox.
 - State lives in `/root/.agent-bridge/` (resolved from the account's passwd home, not `$HOME`, so multi-account Claude and Codex share one log / counter).
 
+### Messaging across machines
+
+Run a relay on one host reachable by all participants. Install the same agbridge version on each Linux/tmux machine. Nodes make outbound connections to the relay.
+
+```bash
+agbridge relay 7432                        # keep running on the relay host
+agbridge invite                            # in a second terminal, get the private group code
+
+agbridge join relay.example.com:7432 lab   # once on each machine; enter the code at the prompt
+agbridge up                                # keep running on each participating machine
+
+agbridge list                              # online machines, stable IDs, panes and states
+agbridge send lab/codex ask "How did the tests go?"
+agbridge send lab/%3 note "Build finished"
+```
+
+To include the relay host's agents, run `agbridge invite | agbridge join 127.0.0.1:7432 hub` there and start `agbridge up`. After a restart, run the relay and node commands again. Each node generates its own private key on joining. Use `machineID/%pane` when names collide. For replies, use the envelope's full `from` address and its message ID without the leading `#`. When asking from outside an agent pane, use `--from %3` to select a local agent for replies.
+
+Nodes refresh their foreground agent listings about every five seconds and reconnect automatically. Disconnected nodes disappear on socket close or after about 20–25 seconds without a heartbeat. Busy panes queue messages in the receiving node process, which must stay running for delivery. Check `agbridge log` on the receiving host for the final status.
+
+Share the TLS group code only with trusted participants. Members can list agents and working directories and send messages to online agents. Group and machine credentials live in the system account's `~/.agent-bridge/` (override with `AGBRIDGE_DIR`). Run `join` separately on each machine. The relay keeps its online directory and in-flight messages in memory.
+
 ## Environment variables (override config.json)
 
 | Variable | Default | Purpose |

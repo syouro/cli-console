@@ -1,6 +1,6 @@
 ## agent 互通（agbridge）
 
-同机 tmux 里的其他 agent（claude / codex / agy）会通过 `agbridge` 把消息直接敲进你的输入框。
+本机或已加入同一 agbridge 网络的远程 tmux agent（claude / codex / agy）会通过 `agbridge` 把消息直接敲进你的输入框。
 这类输入形如：
 
 ```
@@ -22,4 +22,5 @@
   ```
   收件人可以写 agent 名（claude / codex / agy）、tmux 会话名或 pane id（%N）；同类 agent 有多个时
   用会话名。对方在忙会自动排队等它空闲再投，命令立即返回。长正文用 `--file <path>`。
+- 跨机收件人写成 `机器名/agent` 或 `机器ID/%窗格号`。跨机回复直接使用信封中完整的 `from` 地址和消息编号（去掉 `#`），例如 `agbridge send 机器ID/%3 reply net-123 "收到"`。
 - codex 注意：在默认沙箱里跑 `agbridge` 会报 `error connecting to /tmp/tmux-0/default (Operation not permitted)`，那是沙箱挡了 tmux 的 socket，需要以放开沙箱（需审批）的方式执行这条命令，命令本身没问题。
