@@ -392,3 +392,15 @@ test('bindPanes：codex / agy 从进程树打开的文件里认 uuid（只查 ag
   assert.deepEqual([panes[1].sid, panes[1].ssrc], ['a215b49b-643a-4b53-a98c-b688328778f7', 'agy']);
   assert.deepEqual([panes[2].sid, panes[2].ssrc, panes[2].spid], ['01a07e8f-1a90-7bf1-8361-7527f07a216f', 'codex', 301]);
 });
+test('bindPanes：跳过 agy crashes 日志等非会话文件的 UUID，只认 conversations/presence/brain', () => {
+  const os = require('os');
+  const agyDir = require('path').join(os.homedir(), '.gemini', 'antigravity-cli');
+  const panes = bindPanes(mkPanes(), { procs: PROCS, claude: [], fdLinks: (pid) => {
+    if (pid === 200) return [
+      agyDir + '/crashes/crash_704836_8c233b3a-573c-4c0f-be80-ae24dc341d63.log',
+      agyDir + '/conversations/dd107700-e8d4-4a6a-952a-441804be23d7.db',
+    ];
+    return [];
+  } });
+  assert.deepEqual([panes[1].sid, panes[1].ssrc], ['dd107700-e8d4-4a6a-952a-441804be23d7', 'agy']);
+});

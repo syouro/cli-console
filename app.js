@@ -129,10 +129,13 @@ function mdBlocks(text) {
   while (i < lines.length) {
     var line = lines[i];
     if (line.slice(0, 3) === fence) {
+      var lang = line.slice(3).split(MA).join('').split(MB).join('').trim().split(/\s+/)[0] || '';
       var buf = []; i++;
       while (i < lines.length && lines[i].slice(0, 3) !== fence) { buf.push(lines[i]); i++; }
       i++;
-      html.push('<pre class="cb"><code>' + esc(buf.join('\n')) + '</code></pre>');
+      html.push('<div class="codeblock"><div class="cbhead"><span class="cblang">' +
+        esc(lang || 'code') + '</span><button type="button" class="cbcopy">复制</button></div>' +
+        '<pre class="cb"><code>' + esc(buf.join('\n')) + '</code></pre></div>');
       continue;
     }
     var hm = line.match(/^(#{1,6})\s+(.*)$/);
@@ -205,6 +208,7 @@ function fillProjects() {
       return '<option value="' + esc(p) + '">' + esc(projName(p)) + '</option>';
     }).join('');
   sel.value = cur;
+  syncCSel(sel);
 }
 
 // ---------- 列表 / 搜索 ----------
@@ -273,7 +277,7 @@ function itemEl(s, filter) {
   var el = document.createElement('div');
   el.className = 'item' + (current && current.id === s.id ? ' on' : '');
   var fv = favs[favKey(s)];
-  el.innerHTML = '<div class="t">' + (fv ? '★ ' : '') +
+  el.innerHTML = '<div class="t">' + (fv ? '<span class="fstar">★</span>' : '') +
     (filter ? hi(s.title, [filter]) : esc(s.title)) + '</div>' +
     (fv && fv.note ? '<div class="fnote">' + esc(fv.note) + '</div>' : '') +
     '<div class="r">' + (isLive(s) ? '<span class="liveb">进行中</span>' : '') +
@@ -326,6 +330,7 @@ async function open(s, jumpIdx) {
   stopPane(); hideComposer();
   view = { offset: data.offset, total: data.total, terms: full ? lastTerms : [],
     mode: 'main', loading: false, wrap: null, older: null };
+  syncNavBtns();
   $('#top').style.display = 'flex'; $('#ttl').textContent = data.title;
   $('#top').classList.remove('open'); $('#more').classList.remove('on'); // 换会话时收起操作栏
   var models = sessionModels(data);
@@ -408,8 +413,9 @@ async function loadFavs() {
 }
 function syncFavUI(s) {
   var fv = favs[favKey(s)];
-  $('#fav').textContent = fv ? '★ 已收藏' : '☆ 收藏';
-  $('#fav').className = fv ? 'on' : '';
+  var favSpan = $('#fav span');
+  if (favSpan) favSpan.textContent = fv ? '已收藏' : '收藏';
+  $('#fav').classList.toggle('on', !!fv);
   var inp = $('#favnote');
   inp.style.display = fv ? 'block' : 'none';
   inp.value = fv ? (fv.note || '') : '';
@@ -468,7 +474,7 @@ $('#share').onclick = async function () {
   var note = '只读链接（' + new Date(j.exp).toLocaleDateString('zh-CN') + ' 过期）：';
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(link).then(function () {
-      var b = $('#share'); b.textContent = '✓ 已复制';
+      var b = $('#share span') || $('#share'); b.textContent = '已复制';
       setTimeout(function () { b.textContent = '分享'; }, 1500);
     }, function () { window.prompt(note, link); });
   } else window.prompt(note, link);
@@ -861,13 +867,17 @@ function msgEl(m, terms, side, idx) {
         ' 字</summary><div class="mdbody md">' + md(b.text, terms) + '</div></details>';
     else if (b.kind === 'tool_use') {
       var tv = toolView(b.name, b.input || {}, terms);
-      inner += '<details class="tool block"><summary>' + tv.sum + '</summary>' +
-        tv.body + '</details>';
+      var pvs = [];
+      var sumMain = tv.sum.replace(/ ?<button class="pv"[^>]*>[^<]*<\/button>/g, function (m) {
+        pvs.push(m.trim()); return '';
+      });
+      inner += '<details class="tool block"><summary><span class="tsum">' + sumMain +
+        '</span>' + pvs.join('') + '</summary>' + tv.body + '</details>';
     }
     else if (b.kind === 'tool_result')
       inner += '<details class="tool block' + (b.isError ? ' terr' : '') +
-        '"><summary>' + (b.isError ? '⚠ 工具报错' : '↩ 工具结果') + ' · ' + (b.text || '').length +
-        ' 字</summary><div class="body">' + hi((b.text || '').slice(0, 20000), terms) + '</div></details>';
+        '"><summary><span class="tsum">' + (b.isError ? '⚠ 工具报错' : '↩ 工具结果') + ' · ' + (b.text || '').length +
+        ' 字</span></summary><div class="body">' + hi((b.text || '').slice(0, 20000), terms) + '</div></details>';
   });
   if (m.compact) {
     inner = '<details class="pack block"><summary>📦 压缩摘要（续接会话的上文）</summary>' +
@@ -876,10 +886,13 @@ function msgEl(m, terms, side, idx) {
   var anchor = '';
   if (!side && idx !== undefined) {
     el.dataset.idx = idx;
-    anchor = '<button class="alink" title="复制此消息的直达链接">🔗</button>';
+    anchor = '<button class="alink" title="复制此消息的直达链接" aria-label="复制直达链接">' +
+      '<svg class="ico" style="width:13px;height:13px" viewBox="0 0 24 24">' +
+      '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7"/>' +
+      '<path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7"/></svg></button>';
   }
-  el.innerHTML = '<div class="who ' + m.role + '">' + who + '</div><div class="bubble">' +
-    anchor + inner + '</div>';
+  el.innerHTML = '<div class="who ' + m.role + '"><span class="who-tag">' + who +
+    '</span></div><div class="bubble">' + anchor + inner + '</div>';
   var text = m.blocks.filter(function (b) { return b.kind === 'text'; })
     .map(function (b) { return b.text; }).join('\n\n');
   if (text) {
@@ -921,12 +934,29 @@ $('#conv').addEventListener('click', function (e) {
     encodeURIComponent(current.project) + '/' + encodeURIComponent(current.id) +
     '/' + msg.dataset.idx;
   var done = function () {
-    btn.textContent = '✓';
-    setTimeout(function () { btn.textContent = '🔗'; }, 1200);
+    var orig = btn.innerHTML;
+    btn.dataset.copied = '1';
+    btn.innerHTML = '<svg class="ico" style="width:13px;height:13px" viewBox="0 0 24 24"><polyline points="5 12 10 17 19 7"/></svg>';
+    setTimeout(function () { delete btn.dataset.copied; btn.innerHTML = orig; }, 1200);
   };
   if (navigator.clipboard && navigator.clipboard.writeText)
     navigator.clipboard.writeText(link).then(done, function () { window.prompt('复制链接：', link); });
   else window.prompt('复制链接：', link);
+});
+// 代码块一键复制（对话正文 + 预览浮层通用）
+document.addEventListener('click', function (e) {
+  var btn = e.target && e.target.closest ? e.target.closest('.cbcopy') : null;
+  if (!btn) return;
+  var box = btn.closest('.codeblock');
+  var code = box && box.querySelector('pre.cb code');
+  if (!code) return;
+  copyMessageText(code.textContent || '').then(function () {
+    btn.classList.add('done'); btn.textContent = '✓ 已复制';
+    setTimeout(function () { btn.classList.remove('done'); btn.textContent = '复制'; }, 1500);
+  }, function () {
+    btn.textContent = '复制失败';
+    setTimeout(function () { btn.textContent = '复制'; }, 1500);
+  });
 });
 
 // ---------- 搜索命中跳转 ----------
@@ -1050,7 +1080,7 @@ async function openStats() {
   if (r.from) qs.push('from=' + r.from);
   if (r.to) qs.push('to=' + r.to);
   var st = await (await fetch('api/stats?' + qs.join('&'))).json();
-  current = null; view.mode = 'stats'; clearTimeout(liveTimer);
+  current = null; view.mode = 'stats'; syncNavBtns(); clearTimeout(liveTimer);
   stopPane(); hideComposer();
   $('#top').style.display = 'none'; $('#chains').style.display = 'none'; hideUdetail(); hideHits();
   // 「全部」用库里数据的真实边界当区间；空库退化成今天
@@ -1091,7 +1121,8 @@ async function openStats() {
   var modelRows = Object.keys(st.byModel).sort(function (a, b) {
     return st.byModel[b].out - st.byModel[a].out;
   }).map(function (m) { return usageRow(m, st.byModel[m]); }).join('');
-  $('#conv').innerHTML = '<div class="wrap stats">' + picker +
+  $('#conv').innerHTML = '<div class="wrap stats"><div class="termbar"><b>用量统计</b><span>' +
+    esc(aiName(SRC)) + ' · 按时间区间汇总</span></div>' + picker +
     '<div class="tiles">' +
     tile(t.sessions, '会话') + tile(t.msgTotal, '消息') +
     tile(fmtTok(t.out), '输出 token') + tile(fmtTok(t.in), '输入 token') +
@@ -1151,11 +1182,12 @@ async function openStats() {
 // ---------- tmux 控制台 ----------
 // 语义化控制：后端解析终端状态（菜单/忙碌/空闲），这里渲染成原生控件；
 // 点按钮 / 发消息再经 /api/tmux/send 翻译成按键注回 CLI。裸终端画面只作兜底。
-var TMUX = { enabled: false, panes: [] };
+var TMUX = { enabled: false, panes: [], loaded: false };
 function encCwd(p) { return String(p || '').replace(/[^A-Za-z0-9]/g, '-'); }
 async function loadTmux() {
   try { TMUX = await (await fetch('api/tmux')).json(); }
   catch (e) { TMUX = { enabled: false, panes: [] }; }
+  TMUX.loaded = true;
   $('#termBtn').style.display = TMUX.enabled ? '' : 'none';
   return TMUX;
 }
@@ -1324,9 +1356,9 @@ function updateCState(st) {
   var sig = JSON.stringify(st);
   if (sig === COMP.sig) return;
   COMP.sig = sig;
-  // ⇧⇥ 按钮上带出当前权限模式，切完立刻能看到落在哪个档
+  // ⇧Tab 按钮上带出当前权限模式，切完立刻能看到落在哪个档
   var mb = document.querySelector('#composer .ckey[data-k=BTab]');
-  if (mb) mb.textContent = st.mode ? '⇧⇥ ' + (MODE_CN[st.mode] || st.mode) : '⇧⇥';
+  if (mb) mb.textContent = st.mode ? '⇧Tab ' + (MODE_CN[st.mode] || st.mode) : '⇧Tab';
   var el = $('#cstate'), h = '';
   if (st.kind === 'menu') {
     if (st.question) h += '<div class="cq">' + esc(st.question) + '</div>';
@@ -1336,7 +1368,7 @@ function updateCState(st) {
         (o.desc ? '<small>' + esc(o.desc) + '</small>' : '') + '</button>';
     }).join('') + '</div>';
   } else if (st.kind === 'busy') {
-    h = '<div class="cbusy">✻ 正在干活…（Esc 可打断，这时发的消息会排队）</div>';
+    h = '<div class="cbusy">正在执行…（Esc 可打断，此时发出的消息会排队）</div>';
   }
   el.innerHTML = h;
   el.querySelectorAll('.copt').forEach(function (b) {
@@ -1402,7 +1434,7 @@ function pickPane(panes, data) {
   return { pane: pn || null, cands: cands };
 }
 async function bindComposer(data) {
-  if (SHARE || !TMUX.enabled) return;
+  if (SHARE || (TMUX.loaded && !TMUX.enabled)) return;
   await loadTmux();
   if (!TMUX.enabled || !current || current.id !== data.id || view.mode !== 'main') return;
   var r = pickPane(TMUX.panes || [], data);
@@ -1458,7 +1490,7 @@ async function pollSys() {
   if (view.mode === 'term') paneTimer = setTimeout(pollSys, 10000);
 }
 async function openTermList() {
-  current = null; view.mode = 'term'; clearTimeout(liveTimer);
+  current = null; view.mode = 'term'; syncNavBtns(); clearTimeout(liveTimer);
   stopPane(); hideComposer();
   $('#top').style.display = 'none'; $('#chains').style.display = 'none'; hideUdetail(); hideHits();
   await loadTmux();
@@ -1467,7 +1499,7 @@ async function openTermList() {
   if (view.mode !== 'term') return;
   var panes = TMUX.panes || [];
   var h = '<div class="wrap"><div class="termbar"><b>tmux 窗格</b><span>' + panes.length +
-    ' 个</span><button id="trefresh">刷新</button></div>';
+    ' 个活跃</span><button id="trefresh">刷新</button></div>';
   // 服务器状态条；拉不到时留个隐形占位，轮询恢复后还能原地补上
   h += sysBarHTML(sys) || '<div id="sysbar" style="display:none"></div>';
   // 新建会话：目录输入带历史会话 cwd 的联想
@@ -1480,10 +1512,10 @@ async function openTermList() {
       return '<option value="' + esc(c) + '">';
     }).join('') + '</datalist>' +
     '<input id="tcmd" placeholder="启动命令（空=shell，填 claude 直接开）" autocomplete="off">' +
-    '<button id="tcreate">＋ 新建会话</button></div>';
-  if (!panes.length) h += '<div class="empty">没有正在运行的 tmux 窗格<br><br>用上面的表单拉一个起来</div>';
-  h += panes.map(function (pn, i) {
-    return '<div class="item pane-card" data-i="' + i + '"><div class="t">' +
+    '<button id="tcreate" class="primary">＋ 新建会话</button></div>';
+  if (!panes.length) h += '<div class="empty"><b>没有正在运行的 tmux 窗格</b>用上面的表单新建一个终端会话</div>';
+  else h += '<div class="card-list">' + panes.map(function (pn, i) {
+    return '<div class="card-item pane-card" data-i="' + i + '"><div class="t">' +
       esc(paneLabel(pn)) + ' · ' + esc(pn.cmd) +
       (pn.sid ? ' <span class="badge" title="会话 ' + esc(pn.sid) + '">' +
         esc((pn.ssrc || 'claude') + ' ' + pn.sid.slice(0, 8)) + '</span>'
@@ -1495,6 +1527,7 @@ async function openTermList() {
           fmtMem(sys.paneMem[pn.id]) + '</span>' : '') + '</div>' +
       '<button class="pkill" data-i="' + i + '" title="关闭窗格（终止其中进程）">✕</button></div>';
   }).join('') + '</div>';
+  h += '</div>';
   var conv = $('#conv');
   conv.innerHTML = h; conv.scrollTop = 0;
   $('#trefresh').onclick = openTermList;
@@ -1532,7 +1565,7 @@ async function openTermList() {
   render($('#q').value.trim());
 }
 function openPane(pn) {
-  current = null; view.mode = 'pane'; clearTimeout(liveTimer); stopPane();
+  current = null; view.mode = 'pane'; syncNavBtns(); clearTimeout(liveTimer); stopPane();
   $('#top').style.display = 'none'; $('#chains').style.display = 'none'; hideUdetail(); hideHits();
   $('#conv').innerHTML = '<div class="termwrap"><div class="termbar">' +
     '<button id="tback">← 窗格列表</button><b>' + esc(paneLabel(pn)) + '</b><span>' +
@@ -1667,27 +1700,28 @@ function fmtSize(b) {
   return b + 'B';
 }
 async function openFilesPage() {
-  current = null; view.mode = 'files'; clearTimeout(liveTimer);
+  current = null; view.mode = 'files'; syncNavBtns(); clearTimeout(liveTimer);
   stopPane(); hideComposer();
   $('#top').style.display = 'none'; $('#chains').style.display = 'none'; hideUdetail(); hideHits();
   var j = {};
   try { j = await (await fetch('api/files')).json(); } catch (e) { /* */ }
   if (view.mode !== 'files') return;
   UPFILES = j.files || [];
-  var h = '<div class="wrap"><div class="termbar"><b>📁 文件</b><span>' + UPFILES.length +
-    ' 个 · md 可在线编辑</span>' +
-    '<button id="fup">⇧ 上传</button><button id="fnew">＋ 新建 md</button>' +
+  var h = '<div class="wrap"><div class="termbar"><b>文件区</b><span>' + UPFILES.length +
+    ' 个 · Markdown 支持在线编辑</span>' +
+    '<button id="fup" class="primary">⇧ 上传</button><button id="fnew">＋ 新建 md</button>' +
     '<button id="frefresh">刷新</button>' +
     '<input type="file" id="fpick" multiple style="display:none" accept=".md,.markdown,.txt,' +
     '.json,.csv,.log,.html,.htm,.svg,.png,.jpg,.jpeg,.gif,.webp,.pdf"></div>';
   if (j.error) h += '<div class="empty">' + esc(j.error) + '</div>';
   else if (!UPFILES.length)
-    h += '<div class="empty">还没有文件<br><br>「上传」放 md / 图片进来，或「新建 md」直接写</div>';
-  h += UPFILES.map(function (f, i) {
-    return '<div class="item" data-i="' + i + '"><div class="t">' + upIcon(f.ext) + ' ' +
+    h += '<div class="empty"><b>还没有文件</b>点击「上传」放入文档与图片，或「新建 md」直接在线编写</div>';
+  else h += '<div class="card-list">' + UPFILES.map(function (f, i) {
+    return '<div class="card-item" data-i="' + i + '"><div class="t">' + upIcon(f.ext) + ' ' +
       esc(f.name) + '</div><div class="r"><span>' + fmtSize(f.size) + '</span><span>' +
       rel(f.mtime) + '</span><button class="fdel" data-i="' + i + '">删除</button></div></div>';
   }).join('') + '</div>';
+  h += '</div>';
   var conv = $('#conv');
   conv.innerHTML = h; conv.scrollTop = 0;
   $('#frefresh').onclick = openFilesPage;
@@ -1705,7 +1739,7 @@ async function openFilesPage() {
     if (UPFILES.some(function (f) { return f.name === n; })) { alert('已存在同名文件：' + n); return; }
     editUpFile(n, '', true);
   };
-  conv.querySelectorAll('.item[data-i]').forEach(function (el) {
+  conv.querySelectorAll('.card-item[data-i]').forEach(function (el) {
     el.onclick = function () { openUpPreview(UPFILES[+el.dataset.i].name); };
   });
   conv.querySelectorAll('.fdel').forEach(function (b) {
@@ -1830,15 +1864,26 @@ $('#filesBtn').onclick = function () {
   openFilesPage();
 };
 
+// ---------- 顶部视图按钮激活态 ----------
+function syncNavBtns() {
+  var m = view && view.mode;
+  var tb = $('#termBtn'), fb = $('#filesBtn'), sb = $('#statsBtn');
+  if (tb) tb.classList.toggle('on', m === 'term' || m === 'pane');
+  if (fb) fb.classList.toggle('on', m === 'files');
+  if (sb) sb.classList.toggle('on', m === 'stats');
+}
+
 // ---------- 数据源切换（Claude / Codex / Agy 各自一页） ----------
 function syncSrcUI() {
+  document.documentElement.setAttribute('data-src', SRC);
   // 有任一附加源才显示页签条；没启用的源藏掉自己的按钮
   $('#srctabs').style.display = (SRC_ON.codex || SRC_ON.agy) ? 'flex' : 'none';
   document.querySelectorAll('#srctabs button').forEach(function (b) {
     b.style.display = SRC_ON[b.dataset.s] ? '' : 'none';
     b.classList.toggle('on', b.dataset.s === SRC);
   });
-  $('#side h1').innerHTML = '<span class="dot"></span>' + aiName(SRC) + ' 对话历史';
+  var pill = $('#srcPill');
+  if (pill) pill.textContent = aiName(SRC);
 }
 function switchSrc(s) {
   if (s === SRC) return;
@@ -1846,11 +1891,11 @@ function switchSrc(s) {
   syncSrcUI();
   // 两页独立：关掉当前会话视图，回到本源的列表
   current = null; clearTimeout(liveTimer); stopPane(); hideComposer();
-  view.mode = 'idle';
+  view.mode = 'idle'; syncNavBtns();
   $('#top').style.display = 'none'; $('#chains').style.display = 'none'; hideUdetail(); hideHits();
-  $('#conv').innerHTML = '<div class="empty">← 选择左侧的一段对话开始查看</div>';
+  $('#conv').innerHTML = '<div class="empty"><b>选择一段对话开始查看</b>从左侧列表点选会话，或在搜索框输入关键词跨全部会话检索正文</div>';
   history.replaceState(null, '', location.pathname + location.search);
-  fillProjects(); $('#fproj').value = '';
+  fillProjects(); $('#fproj').value = ''; syncCSel($('#fproj'));
   reRun();
 }
 document.querySelectorAll('#srctabs button').forEach(function (b) {
@@ -1859,7 +1904,12 @@ document.querySelectorAll('#srctabs button').forEach(function (b) {
 
 // ---------- 事件 ----------
 var timer = null;
+function syncQClear() {
+  var c = $('#qclear');
+  if (c) c.classList.toggle('show', !!$('#q').value);
+}
 function onQuery() {
+  syncQClear();
   var v = $('#q').value.trim(); clearTimeout(timer);
   if (!v) { searchMode = false; render(''); return; }
   render(v); timer = setTimeout(function () { searchMode = true; doSearch(v); }, 280);
@@ -1867,9 +1917,23 @@ function onQuery() {
 function reRun() { var v = $('#q').value.trim(); if (searchMode && v) doSearch(v); else render(v); }
 
 // ---------- 深浅色 ----------
+var THEME_SVG = {
+  auto: '<svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor" stroke="none"/></svg>',
+  dark: '<svg class="ico" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+  light: '<svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><line x1="12" y1="2.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="21.5"/><line x1="2.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="21.5" y2="12"/><line x1="5.3" y1="5.3" x2="7.1" y2="7.1"/><line x1="16.9" y1="16.9" x2="18.7" y2="18.7"/><line x1="18.7" y1="5.3" x2="16.9" y2="7.1"/><line x1="7.1" y1="16.9" x2="5.3" y2="18.7"/></svg>'
+};
+function syncThemeUI() {
+  var t = document.documentElement.getAttribute('data-theme') || 'auto';
+  var btn = $('#theme'); if (!btn) return;
+  btn.innerHTML = THEME_SVG[t] || THEME_SVG.auto;
+  btn.title = t === 'dark' ? '外观：深色（点击切浅色）'
+    : t === 'light' ? '外观：浅色（点击跟随系统）' : '外观：跟随系统（点击切深色）';
+}
 function initTheme() {
+  document.documentElement.setAttribute('data-src', SRC);
   var t = localStorage.getItem('chv-theme');
   if (t) document.documentElement.setAttribute('data-theme', t);
+  syncThemeUI();
 }
 
 // ---------- 登录 ----------
@@ -1878,10 +1942,10 @@ function showLogin() {
   $('#main').style.display = 'none'; $('#menuBtn').style.display = 'none';
   // 清掉上一个身份留在主区的内容（换账号登录时不该看到别人的页面）
   current = null; clearTimeout(liveTimer); stopPane(); hideComposer();
-  view.mode = 'idle';
+  view.mode = 'idle'; syncNavBtns();
   $('#top').style.display = 'none'; $('#chains').style.display = 'none';
   hideUdetail(); hideHits();
-  $('#conv').innerHTML = '<div class="empty">← 选择左侧的一段对话开始查看</div>';
+  $('#conv').innerHTML = '<div class="empty"><b>选择一段对话开始查看</b>从左侧列表点选会话，或在搜索框输入关键词跨全部会话检索正文</div>';
   setTimeout(function () { $('#pw').focus(); }, 50);
 }
 function applyMe(me) {
@@ -1995,8 +2059,108 @@ document.addEventListener('keydown', function (e) {
 });
 
 $('#q').addEventListener('keydown', function (e) {
-  if (e.key === 'Escape') { e.target.value = ''; searchMode = false; render(''); }
+  if (e.key === 'Escape') { e.target.value = ''; syncQClear(); searchMode = false; render(''); }
 });
+if ($('#qclear')) {
+  $('#qclear').onclick = function () {
+    $('#q').value = ''; syncQClear(); searchMode = false; render(''); $('#q').focus();
+  };
+}
+// ---------- 自定义下拉（渐进增强原生 select，保持 .value 与 change 事件不变） ----------
+var CSEL_ARR = '<svg class="ico csel-arr" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>';
+var CSEL_CHK = '<svg class="ico csel-chk" viewBox="0 0 24 24"><polyline points="5 12 10 17 19 7"/></svg>';
+function closeCSels(except) {
+  document.querySelectorAll('.csel.open').forEach(function (w) {
+    if (w !== except) {
+      w.classList.remove('open');
+      var b = w.querySelector('.csel-btn');
+      if (b) b.setAttribute('aria-expanded', 'false');
+    }
+  });
+}
+function syncCSel(sel) {
+  if (sel && sel._syncCSel) sel._syncCSel();
+}
+function initCSel(sel, opts) {
+  if (!sel || sel._syncCSel) return;
+  opts = opts || {};
+  var wrap = document.createElement('div');
+  wrap.className = 'csel' + (opts.alignRight ? ' csel-right' : '');
+  sel.parentNode.insertBefore(wrap, sel);
+  sel.classList.add('csel-native');
+  wrap.appendChild(sel);
+  var btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'csel-btn';
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.innerHTML = '<span class="csel-val"></span>' + CSEL_ARR;
+  var menu = document.createElement('div');
+  menu.className = 'csel-menu'; menu.setAttribute('role', 'listbox');
+  wrap.appendChild(btn); wrap.appendChild(menu);
+  var valEl = btn.querySelector('.csel-val');
+  function sync() {
+    var idx = sel.selectedIndex >= 0 ? sel.selectedIndex : 0;
+    var cur = sel.options[idx];
+    var txt = cur ? cur.textContent : '';
+    valEl.textContent = txt;
+    btn.title = txt;
+    wrap.classList.toggle('filtered', idx > 0);
+    menu.innerHTML = '';
+    Array.prototype.forEach.call(sel.options, function (o, i) {
+      var item = document.createElement('button');
+      item.type = 'button'; item.setAttribute('role', 'option');
+      var isOn = i === idx;
+      item.className = 'csel-opt' + (isOn ? ' on' : '');
+      item.setAttribute('aria-selected', isOn ? 'true' : 'false');
+      item.title = o.textContent;
+      item.innerHTML = '<span class="csel-lbl">' + esc(o.textContent) + '</span>' + CSEL_CHK;
+      item.onclick = function (e) {
+        e.stopPropagation();
+        var changed = sel.value !== o.value;
+        sel.value = o.value;
+        closeCSels();
+        sync();
+        if (changed) sel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      menu.appendChild(item);
+    });
+  }
+  btn.onclick = function (e) {
+    e.stopPropagation();
+    var willOpen = !wrap.classList.contains('open');
+    closeCSels(willOpen ? wrap : null);
+    var ew = $('#exp') && $('#exp').parentNode; if (ew) ew.classList.remove('open');
+    wrap.classList.toggle('open', willOpen);
+    btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    if (willOpen) {
+      var active = menu.querySelector('.csel-opt.on');
+      if (active) active.scrollIntoView({ block: 'nearest' });
+    }
+  };
+  wrap.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && wrap.classList.contains('open')) {
+      e.stopPropagation(); closeCSels(); btn.focus(); return;
+    }
+    if (!wrap.classList.contains('open') && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault(); btn.click(); return;
+    }
+    if (wrap.classList.contains('open') && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      var items = Array.prototype.slice.call(menu.querySelectorAll('.csel-opt'));
+      var pos = items.indexOf(document.activeElement);
+      var next = pos < 0 ? (sel.selectedIndex >= 0 ? sel.selectedIndex : 0)
+        : (pos + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      if (items[next]) items[next].focus();
+    }
+  });
+  sel.addEventListener('change', sync);
+  sel._syncCSel = sync;
+  sync();
+}
+initCSel($('#fproj'));
+initCSel($('#ftime'), { alignRight: true });
+document.addEventListener('click', function () { closeCSels(); });
+
 $('#fproj').addEventListener('change', reRun);
 $('#ftime').addEventListener('change', function () {
   var custom = $('#ftime').value === 'custom';
@@ -2020,6 +2184,7 @@ $('#theme').onclick = function () {
   if (next) document.documentElement.setAttribute('data-theme', next);
   else document.documentElement.removeAttribute('data-theme');
   localStorage.setItem('chv-theme', next);
+  syncThemeUI();
 };
 $('#statsBtn').onclick = function () {
   document.body.classList.remove('nav-open');
@@ -2029,11 +2194,18 @@ $('#termBtn').onclick = function () {
   document.body.classList.remove('nav-open');
   openTermList();
 };
+function autoGrowCin() {
+  var t = $('#cin'); if (!t) return;
+  t.style.height = 'auto';
+  t.style.height = Math.min(t.scrollHeight, 132) + 'px';
+}
+$('#cin').addEventListener('input', autoGrowCin);
 $('#csend').onclick = function () {
   var v = $('#cin').value;
   if (!v.trim() || !COMP.target) return;
   sendTmux({ text: v, keys: ['Enter'] });
   $('#cin').value = '';
+  autoGrowCin();
 };
 $('#cin').addEventListener('keydown', function (e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#csend').onclick(); }
@@ -2047,7 +2219,8 @@ function tsName() {
 }
 async function composerUpload(files) {
   if (!files.length) return;
-  var btn = $('#cattach'); btn.textContent = '⏳ 上传中…';
+  var lbl = $('#cattach span') || $('#cattach');
+  lbl.textContent = '上传中…';
   try {
     var paths = [];
     for (var i = 0; i < files.length; i++) {
@@ -2068,9 +2241,10 @@ async function composerUpload(files) {
       var t = $('#cin');
       var sep = t.value && !/\s$/.test(t.value) ? ' ' : '';
       t.value += sep + paths.join(' ') + ' ';
+      autoGrowCin();
       t.focus();
     }
-  } finally { btn.textContent = '📎 上传'; }
+  } finally { lbl.textContent = '上传'; }
 }
 $('#cattach').onclick = function () { $('#cfile').click(); };
 $('#cfile').onchange = function () {
