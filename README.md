@@ -150,6 +150,28 @@ agbridge stop lab/review                        # 收到结果后关闭会话
 - `start` 在目标机的指定目录创建独立的 tmux 会话，启动 `claude`、`codex` 或 `agy`，并输出窗格地址。CLI 需要在目标机 `up` 进程的 `PATH` 中。目录填目标机的绝对路径，或用 `'~/项目目录'` 按目标机的主目录解析。
 - `stop` 关闭指定的 agbridge 会话。机器名也可换成清单中的机器 ID。操作本机时省略 `lab/`，目录也可以用相对路径。
 
+#### Firekeeper 信箱
+
+在运行 Firekeeper 宿主的机器上，将端点名和 Unix 控制口登记到 `~/.agent-bridge/firekeeper.json`。设置了 `AGBRIDGE_DIR` 时，将文件放在那里。端点名采用 `firekeeper-<实例名>`，与宿主的 `mail.name` 完全一致。
+
+```json
+{
+  "firekeeper-review": "/run/user/1000/firekeeper-review.sock"
+}
+```
+
+```bash
+agbridge list
+agbridge send firekeeper-review note '本机消息'
+agbridge send lab/firekeeper-review ask '跨机消息'
+```
+
+清单会显示信箱在线或离线。使用跨机清单时，中转和两端更新到支持信箱的版本，两端运行 `agbridge up`。发送端以 `机器名/端点名` 或 `机器ID/端点名` 寻址。信箱与 tmux 会话同名时，发送会报歧义，可用 `%窗格号` 指定 tmux 或给信箱改名。
+
+信箱由宿主排队。宿主接受信件或确认已收到同一封信时，agbridge 回执为 `sent`。宿主拒收时，发件方会看到宿主返回的错误。回复时使用信封中的完整 `from` 地址和消息编号。Firekeeper 发件使用 `--from <端点名>`。
+
+脚本可以用 `agbridge list --json` 读取 `machines` 和 `members`，其中信箱状态为 `online` 或 `offline`。失败时可读取 `error`。`agbridge send --json` 返回一条包含 `status`、`id` 和 `to` 的 JSON。`status` 为 `sent`、`queued` 或 `error`，失败时含 `error` 并以非零状态退出。尚未生成编号时 `id` 为 `null`。
+
 ## 环境变量（优先于 config.json）
 
 | 变量 | 默认 | 说明 |

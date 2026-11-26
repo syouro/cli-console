@@ -153,6 +153,28 @@ agbridge stop lab/review                        # close the session after the re
 - `start` opens a detached tmux session in the target directory, launches `claude`, `codex`, or `agy`, and prints the pane address. The CLI must be on the `PATH` of the target's `up` process. Use an absolute path on the target or quote `'~/project'` to use its home directory.
 - `stop` closes the named session created through `agbridge start`. You can use a machine ID in place of its name. Omit `lab/` for local sessions, which also accept relative directories.
 
+#### Firekeeper mailboxes
+
+On the Firekeeper host, map each endpoint name to its Unix control socket in `~/.agent-bridge/firekeeper.json`, or in `AGBRIDGE_DIR` if set. Use `firekeeper-<instance-name>` and match the host's `mail.name` exactly.
+
+```json
+{
+  "firekeeper-review": "/run/user/1000/firekeeper-review.sock"
+}
+```
+
+```bash
+agbridge list
+agbridge send firekeeper-review note 'Local message'
+agbridge send lab/firekeeper-review ask 'Remote message'
+```
+
+The directory shows both online and offline mailboxes. For cross-machine discovery, update the relay and both nodes, then keep `agbridge up` running on each node. Use `machine/endpoint` or `machineID/endpoint`. If a mailbox and a tmux session share a name, the send reports an ambiguous target. Use the pane ID for the tmux session or rename the mailbox.
+
+Firekeeper queues messages itself. An accepted message or a duplicate acknowledgement returns `sent`. If the host rejects a message, the sender gets the host's error. To reply, use the full `from` address and the message ID from the envelope. Firekeeper sends with `--from <endpoint-name>`.
+
+`agbridge list --json` reports `machines` and `members`, with `online` or `offline` mailbox states and an `error` on failure. `agbridge send --json` prints a single object with `status`, `id`, and `to`. The status is `sent`, `queued`, or `error`. Failures include `error` and return a nonzero exit code. The ID is `null` until one has been generated.
+
 ## Environment variables (override config.json)
 
 | Variable | Default | Purpose |

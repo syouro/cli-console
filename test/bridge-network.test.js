@@ -173,7 +173,9 @@ test('独立 tmux 节点跨机会话管理、双向投递、离线并以同一 I
   fs.writeFileSync(path.join(b.home, 'busy'), '');
   await until(async () => (await nodes()).find(n => n.id === b.id)?.agents[0]?.state === 'busy');
   assert.match(await a.run('send', 'lab/%0', 'note', 'queued-one'), /已排队/);
-  assert.match(await a.run('send', 'lab/%0', 'note', 'queued-two'), /已排队/);
+  const pending = JSON.parse(await a.run('send', 'lab/%0', 'note', 'queued-two', '--json'));
+  assert.deepEqual(pending, { status: 'queued', id: pending.id, to: 'lab/%0' });
+  assert.match(pending.id, /^net-\d+$/);
   assert.ok(!fs.readFileSync(b.inbox, 'utf8').includes('queued-one'));
   fs.unlinkSync(path.join(b.home, 'busy'));
   await until(() => fs.readFileSync(b.inbox, 'utf8').includes('queued-two'));

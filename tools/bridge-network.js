@@ -7,6 +7,7 @@ const tls = require('node:tls');
 const crypto = require('node:crypto');
 const { once } = require('node:events');
 const { setTimeout: sleep } = require('node:timers/promises');
+const { MAILBOX_NAME } = require('./bridge-mailboxes.js');
 
 const HEARTBEAT = 5000;
 const LEASE = 4 * HEARTBEAT;
@@ -156,22 +157,31 @@ function makeRelay(group) {
         const id = machineId(data.key);
         if (typeof data.name !== 'string' || !NAME.test(data.name) || /^[0-9a-f]{24}$/.test(data.name)) throw new Error('无效的机器名');
         if (node || nodes.has(id)) throw new Error('本机 KEY 已在线，请检查重复运行的 agbridge up');
-        node = { id, name: data.name, agents: [], request, seen: Date.now(), socket };
+        node = { id, name: data.name, agents: [], mailboxes: [], request, seen: Date.now(), socket };
         nodes.set(id, node);
         return id;
       }
       if (method === 'heartbeat' && node) {
         if (!Array.isArray(data.agents)) throw new Error('无效的 agent 清单');
-        node.agents = data.agents.map(({ id, session, agent, state, cwd }) => {
+        const agents = data.agents.map(({ id, session, agent, state, cwd }) => {
           if (!/^%\d+$/.test(id) || ![session, agent, state, cwd].every(field =>
             typeof field === 'string' && !/[\x00-\x1f\x7f]/.test(field))) throw new Error('无效的窗格记录');
           return { id, session, agent, state, cwd };
         });
+        const mailboxes = data.mailboxes ?? [];
+        if (!Array.isArray(mailboxes)) throw new Error('无效的 Firekeeper 信箱清单');
+        node.mailboxes = mailboxes.map(({ name, state }) => {
+          if (typeof name !== 'string' || !MAILBOX_NAME.test(name) || !['online', 'offline'].includes(state)) {
+            throw new Error('无效的 Firekeeper 信箱记录');
+          }
+          return { name, state };
+        });
+        node.agents = agents;
         node.seen = Date.now();
         return true;
       }
       if (method === 'list') {
-        return [...nodes.values()].map(({ id, name, agents }) => ({ id, name, agents }));
+        return [...nodes.values()].map(({ id, name, agents, mailboxes }) => ({ id, name, agents, mailboxes }));
       }
       if (method === 'send' || method === 'start' || method === 'stop') {
         const source = nodes.get(machineId(data.key));
@@ -235,8 +245,7 @@ async function runNode(config, discover, receive, manage) {
       await request('register', { name: config.name, key: config.key });
       console.log('已连接中转：' + config.name + ' (' + id + ')');
       while (!socket.destroyed) {
-        const agents = await discover();
-        await request('heartbeat', { agents });
+        await request('heartbeat', await discover());
         await sleep(HEARTBEAT, undefined, { signal: closed.signal });
       }
     } catch (e) { if (e.name !== 'AbortError') console.error(e.message); }

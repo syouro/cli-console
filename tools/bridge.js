@@ -5,9 +5,10 @@
 // 输入框再补回车；对方看到的就是一条开头写着「谁发的、几号、要不要回」的用户消息。
 // 多机：relay [端口] 开中转，invite 查看加入码，join <host:port> [机器名] 加入，up 上线。
 //
-//   agbridge list                          列出 agent 窗格与空闲状态
+//   agbridge list [--json]                 列出 agent 窗格与 Firekeeper 信箱
 //   agbridge send <to> ask|note "正文"     to = agent 名、会话名、%N 或 机器/agent
 //   agbridge send <to> reply <re-id> "正文"
+//   send --json 输出单条投递回执
 //   agbridge start <[机器/]会话> <claude|codex|agy> <目录>
 //   agbridge stop <[机器/]会话>            关闭由 agbridge start 创建的会话
 //   跨机启动与关闭需在目标机运行 agbridge up --allow-manage
@@ -20,6 +21,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('node:crypto');
 const network = require('./bridge-network.js');
+const { readMailboxes, mailboxRows, submitMail } = require('./bridge-mailboxes.js');
 const { execFile, spawn } = require('child_process');
 const { paneState, tmuxPaste } = require(path.join(__dirname, '..', 'server.js'));
 
@@ -42,7 +44,7 @@ function tmux(args, options = {}) {
   return new Promise((resolve, reject) => {
     execFile('tmux', args, { timeout: 5000, maxBuffer: 4 << 20, ...options }, (err, out, serr) => {
       if (!err) return resolve(out);
-      reject(new Error(String(serr || '').trim() || String(err.message || err)));
+      reject(new Error(String(serr || '').trim() || String(err.message || err), { cause: err }));
     });
   });
 }
@@ -88,7 +90,7 @@ async function panes(foregroundOnly = false) {
   let out;
   try { out = await tmux(['list-panes', '-a', '-F', fmt]); }
   catch (e) {
-    if (NO_TMUX_SERVER.test(e.message)) return [];
+    if (e.cause?.code === 'ENOENT' || NO_TMUX_SERVER.test(e.message)) return [];
     throw e;
   }
   return out.split('\n').filter(Boolean).map((l) => {
@@ -111,8 +113,8 @@ function nameOf(all, p) {
 }
 
 // 发送者：优先 $TMUX_PANE（agent 在 tmux 里跑 Bash 时会继承），否则 --from 指定
-function whoAmI(all, opt) {
-  const byId = all.find((p) => p.id === process.env.TMUX_PANE);
+function whoAmI(all, opt, mailboxSender = false) {
+  const byId = !mailboxSender && all.find((p) => p.id === process.env.TMUX_PANE);
   const me = byId ? nameOf(all, byId) : '';
   return { name: opt.from || me || 'human', pane: byId ? byId.id : '' };
 }
@@ -125,6 +127,14 @@ function resolveTo(all, to, selfPane) {
   if (!cands.length) throw new Error(`找不到收件人「${to}」，agbridge list 看看有哪些`);
   throw new Error(`「${to}」匹配到多个窗格，请用会话名或 pane id：\n` +
     cands.map((p) => `  ${p.id}  ${p.session}  (${p.agent || p.cmd})  ${p.cwd}`).join('\n'));
+}
+
+function resolveMailbox(mailboxes, all, to) {
+  const mailbox = mailboxes.find(p => p.name === to);
+  if (mailbox && all.some(p => p.session === to)) {
+    throw new Error(`「${to}」同时匹配 Firekeeper 信箱和 tmux 会话，请用 pane id 或给信箱改名`);
+  }
+  return mailbox;
 }
 
 function nextSeq(from) {
@@ -198,27 +208,47 @@ async function agentRows(foregroundOnly = false) {
   })));
 }
 
-async function cmdList() {
-  const config = network.readConfig();
-  const rows = [];
-  function add(agents, host, local) {
-    for (const p of agents) rows.push([host + p.id, p.session, p.agent, p.state, p.cwd,
-      local && p.id === process.env.TMUX_PANE ? '← 我' : '']);
+async function discoverMembers(foregroundOnly = false) {
+  const [agents, mailboxes] = await Promise.all([agentRows(foregroundOnly), mailboxRows(readMailboxes(HOME))]);
+  return { agents, mailboxes };
+}
+
+async function cmdList(opt) {
+  const machines = [], members = [];
+  function add(node, prefix, machineId) {
+    for (const p of node.agents) members.push({ type: 'tmux', address: prefix + p.id, name: p.session,
+      agent: p.agent, state: p.state, cwd: p.cwd, machineId });
+    for (const p of node.mailboxes ?? []) members.push({ type: 'mailbox', address: prefix + p.name, name: p.name,
+      agent: 'firekeeper', state: p.state, machineId });
   }
-  add(await agentRows(), '', true);
-  if (config) {
-    try {
-      const nodes = await network.call(config, 'list');
+  let error, haveLocal = false;
+  try {
+    const config = network.readConfig();
+    const id = config ? network.machineId(config.key) : null;
+    add(await discoverMembers(), '', id);
+    haveLocal = true;
+    if (config) {
+      const nodes = await network.call(config, 'list').catch(e => { throw new Error('中转不可达：' + e.message); });
       for (const node of nodes) {
-        const local = node.id === network.machineId(config.key);
+        const local = node.id === id;
         const host = nodes.filter(n => n.name === node.name).length > 1 ? node.id : node.name;
-        console.log(`${node.name}  ${node.id}  在线${local ? '（本机）' : ''}`);
-        if (!local) add(node.agents, host + '/', false);
+        machines.push({ id: node.id, name: node.name, local });
+        if (!local) add(node, host + '/', node.id);
       }
-      if (!nodes.some(n => n.id === network.machineId(config.key))) console.error('本机尚未上线，运行 agbridge up');
-    } catch (e) { console.error('中转不可达：' + e.message); process.exitCode = 1; }
+      if (!machines.some(n => n.local)) console.error('本机尚未上线，运行 agbridge up');
+    }
+  } catch (e) {
+    if (!opt.json && !haveLocal) throw e;
+    error = e.message;
+    process.exitCode = 1;
   }
-  if (!rows.length) { console.log('没有找到 agent 窗格'); return; }
+  if (opt.json) { console.log(JSON.stringify({ machines, members, error })); return; }
+  for (const node of machines) console.log(`${node.name}  ${node.id}  在线${node.local ? '（本机）' : ''}`);
+  if (error) console.error(error);
+  if (!members.length) { console.log('没有找到 agent 窗格'); return; }
+  const rows = members.map(p => p.type === 'tmux'
+    ? [p.address, p.name, p.agent, p.state, p.cwd, p.address === process.env.TMUX_PANE ? '← 我' : '']
+    : [p.address, '', p.agent, p.state === 'online' ? '在线' : '离线', '', '']);
   const w = rows.reduce((a, r) => r.map((c, i) => Math.max(a[i] || 0, String(c).length)), []);
   for (const r of rows) console.log(r.map((c, i) => String(c).padEnd(w[i])).join('  ').trimEnd());
 }
@@ -311,37 +341,64 @@ async function cmdSession(opt) {
 }
 
 async function cmdSend(opt) {
-  const [, to, kind, ...rest] = opt._;
-  if (!to || !KINDS.has(kind)) throw new Error('用法：agbridge send <to> ask|note "正文" | send <to> reply <re-id> "正文"');
-  let re = '';
-  if (kind === 'reply') {
-    re = rest.shift() || '';
-    if (!/^[\w.-]+-\d+$/.test(re)) throw new Error('reply 要带被回复的消息编号，如 codex-12');
+  const [, to = null, kind, ...rest] = opt._;
+  let id = null;
+  const print = (status, human) => console.log(opt.json ? JSON.stringify({ status, id, to }) : human);
+  try {
+    if (!to || !KINDS.has(kind)) throw new Error('用法：agbridge send <to> ask|note "正文" | send <to> reply <re-id> "正文"');
+    let re = '';
+    if (kind === 'reply') {
+      re = rest.shift() || '';
+      if (!/^[\w.-]+-\d+$/.test(re)) throw new Error('reply 要带被回复的消息编号，如 codex-12');
+    }
+    const body = readBody(opt, rest).trim();
+    if (!body) throw new Error('正文为空');
+    if (body.length > MAX_LEN) throw new Error(`正文超过 ${MAX_LEN} 字`);
+    const mailboxes = readMailboxes(HOME);
+    const mailboxSender = mailboxes.some(p => p.name === opt.from);
+    const config = to.includes('/') ? network.readConfig() : null;
+    const all = !config || (process.env.TMUX_PANE && !mailboxSender) ? await panes() : [];
+    const me = whoAmI(all, opt, mailboxSender);
+    const from = opt.from || me.pane || me.name;
+    if (config) {
+      const [host, target, ...extra] = to.split('/');
+      if (!host || !target || extra.length) throw new Error('跨机地址格式为 机器/agent');
+      id = 'net-' + crypto.randomBytes(8).readBigUInt64BE().toString();
+      const message = { id, from, kind, re, body };
+      const { status } = await network.call(config, 'send', { key: config.key, host, target, message,
+        sync: !!opt.sync, now: !!opt.now });
+      logLine({ ...message, from: me.name, toName: to, status });
+      print(status, `${status === 'sent' ? '已送达' : '已排队'} #${id} → ${to}`);
+      return;
+    }
+    const mailbox = resolveMailbox(mailboxes, all, to);
+    if (mailbox) {
+      id = 'mail-' + BigInt('0x' + crypto.randomBytes(12).toString('hex'));
+      const { status } = await deliverMailbox(mailbox, { id, from, kind, re, body });
+      print(status, `已送达 #${id} → ${to}`);
+      return;
+    }
+    const dst = resolveTo(all, to, me.pane);
+    id = nextSeq(me.name);
+    const m = { id, from: me.name, to: dst.id, toName: nameOf(all, dst), toSession: dst.session, kind, re, body };
+    const { status } = await dispatch(m, opt);
+    print(status, `${status === 'sent' ? '已送达' : '已排队，空闲后自动送达'} #${id} → ${dst.session} (${dst.id})`);
+  } catch (e) {
+    if (!opt.json) throw e;
+    console.log(JSON.stringify({ status: 'error', id, to, error: e.message }));
+    process.exitCode = 1;
   }
-  const body = readBody(opt, rest).trim();
-  if (!body) throw new Error('正文为空');
-  if (body.length > MAX_LEN) throw new Error(`正文超过 ${MAX_LEN} 字`);
-  const config = to.includes('/') ? network.readConfig() : null;
-  if (config) {
-    const [host, target, ...extra] = to.split('/');
-    if (!host || !target || extra.length) throw new Error('跨机地址格式为 机器/agent');
-    const all = process.env.TMUX_PANE ? await panes() : [];
-    const me = whoAmI(all, opt);
-    const id = 'net-' + crypto.randomBytes(8).readBigUInt64BE().toString();
-    const message = { id, from: opt.from || me.pane || me.name, kind, re, body };
-    const result = await network.call(config, 'send', { key: config.key, host, target, message,
-      sync: !!opt.sync, now: !!opt.now });
-    logLine({ ...message, from: me.name, toName: to, status: result.status });
-    console.log(`${result.status === 'sent' ? '已送达' : '已排队'} #${id} → ${to}`);
-    return;
-  }
-  const all = await panes();
-  const me = whoAmI(all, opt);
-  const dst = resolveTo(all, to, me.pane);
-  const m = { id: nextSeq(me.name), from: me.name, to: dst.id, toName: nameOf(all, dst),
-    toSession: dst.session, kind, re, body };
-  const result = await dispatch(m, opt);
-  console.log(`${result.status === 'sent' ? '已送达' : '已排队，空闲后自动送达'} #${m.id} → ${dst.session} (${dst.id})`);
+}
+
+async function deliverMailbox(mailbox, { id, from, kind, re, body }) {
+  const mail = { id, from, to: mailbox.name, kind, body };
+  if (re) mail.replyTo = re;
+  const entry = { ...mail, toName: mailbox.name, re };
+  let receipt;
+  try { receipt = await submitMail(mailbox.socket, mail); }
+  catch (e) { logLine({ ...entry, status: 'error', error: e.message }); throw e; }
+  logLine({ ...entry, status: 'sent', receipt });
+  return { status: 'sent' };
 }
 
 async function dispatch(m, opt) {
@@ -389,11 +446,14 @@ async function receiveRemote({ sender, target, message, now, sync }, selfId) {
       || /[\x00-\x08\x0b-\x1f\x7f]/.test(body.replace(/\r\n/g, '\n'))) {
     throw new Error('无效的跨机消息');
   }
-  const all = (await panes(true)).filter(p => p.agent);
-  const dst = resolveTo(all, target, sender === selfId ? from : '');
-  const m = { id, from: sender + '/' + from, kind, re, body: body.replace(/\r\n/g, '\n'), to: dst.id,
-    toSession: dst.session, toName: nameOf(all, dst), remotePane: dst.identity };
-  return dispatchRemote(m, { now, sync });
+  const all = await panes(true);
+  const messageData = { id, from: sender + '/' + from, kind, re, body: body.replace(/\r\n/g, '\n') };
+  const mailbox = resolveMailbox(readMailboxes(HOME), all, target);
+  if (mailbox) return deliverMailbox(mailbox, messageData);
+  const agents = all.filter(p => p.agent);
+  const dst = resolveTo(agents, target, sender === selfId ? from : '');
+  return dispatchRemote({ ...messageData, to: dst.id, toSession: dst.session, toName: nameOf(agents, dst),
+    remotePane: dst.identity }, { now, sync });
 }
 
 async function cmdLog(opt) {
@@ -442,13 +502,13 @@ async function main() {
     const config = network.readConfig();
     if (!config) throw new Error('请先运行 agbridge join <中转地址:端口> [机器名]');
     const manage = opt['allow-manage'] ? (method, data) => manageSession(method, data, true) : undefined;
-    return network.runNode(config, () => agentRows(true), receiveRemote, manage);
+    return network.runNode(config, () => discoverMembers(true), receiveRemote, manage);
   }
-  if (cmd === 'list' || cmd === 'ls') return cmdList();
+  if (cmd === 'list' || cmd === 'ls') return cmdList(opt);
   if (cmd === 'send') return cmdSend(opt);
   if (cmd === 'start' || cmd === 'stop') return cmdSession(opt);
   if (cmd === 'log') return cmdLog(opt);
-  console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 17).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+  console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 18).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   process.exitCode = cmd ? 1 : 0;
 }
 
