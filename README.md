@@ -110,7 +110,7 @@ agbridge log                                   # 投递记录
 
 选一台所有参与机器都能访问的主机运行中转。各机安装同一版 agbridge，只需能主动连到中转的 TCP 端口。中转和节点都可以放在 tmux 会话里持续运行。
 
-`agbridge up` 只发现已有的 tmux 窗格。没有 tmux 会话时机器也可以上线，此时清单中有机器名，agent 数量为零。手动打开或关闭 agent 后，清单随下一次心跳更新。
+`agbridge up` 会发现已有的 tmux 窗格。没有 tmux 会话时机器也可以上线，此时清单中有机器名，agent 数量为零。打开或关闭 agent 后，清单随下一次心跳更新。
 
 ```bash
 # 中转机，默认监听 TCP 7432
@@ -136,6 +136,19 @@ agbridge send lab/%3 note "构建已结束"
 - 每台机器首次加入时生成独立的私有 KEY，清单显示从 KEY 派生的稳定 ID。同名机器用 `机器ID/%窗格号` 寻址。收到 `ask` 时，把信封里的完整 `from` 地址和去掉 `#` 的消息编号传给 `agbridge send <from> reply <编号> "回复"`。在 agent 窗格里发送可自动生成回信地址，从普通终端发起提问可用 `--from %3` 指定本机收回复的 agent。
 - 每台机器约每 5 秒上报一次本机前台 agent。正常断开会移出清单，丢失心跳的连接约 20–25 秒后移除。节点会自动重连。收件 agent 忙时，由收件机的 `up` 进程排队，保持该进程运行到投递完毕。两端可用 `agbridge log` 查记录，最终投递状态看收件机。
 - 加入码用于 TLS 加密连接的组认证，持码者可以看到该组的机器、agent 和工作目录，并向在线 agent 发消息。私有 KEY 和加入码保存在系统账号的 `~/.agent-bridge/`（可用 `AGBRIDGE_DIR` 覆盖），各机分别执行 `join` 以获得独立身份。中转只在内存中维护在线清单和转发中的消息。
+
+#### 在目标机启动和关闭 agent
+
+目标机用 `agbridge up --allow-manage` 上线，允许同组在线节点管理 agbridge 会话。发起机保持 `agbridge up` 在线，以下命令在发起机的 agent 窗格里运行。
+
+```bash
+agbridge start lab/review codex '/srv/my project'
+agbridge send lab/review ask '请跑测试并回复结果'
+agbridge stop lab/review                        # 收到结果后关闭会话
+```
+
+- `start` 在目标机的指定目录创建独立的 tmux 会话，启动 `claude`、`codex` 或 `agy`，并输出窗格地址。CLI 需要在目标机 `up` 进程的 `PATH` 中。目录填目标机的绝对路径，或用 `'~/项目目录'` 按目标机的主目录解析。
+- `stop` 关闭指定的 agbridge 会话。机器名也可换成清单中的机器 ID。操作本机时省略 `lab/`，目录也可以用相对路径。
 
 ## 环境变量（优先于 config.json）
 

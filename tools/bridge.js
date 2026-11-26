@@ -8,6 +8,9 @@
 //   agbridge list                          列出 agent 窗格与空闲状态
 //   agbridge send <to> ask|note "正文"     to = agent 名、会话名、%N 或 机器/agent
 //   agbridge send <to> reply <re-id> "正文"
+//   agbridge start <[机器/]会话> <claude|codex|agy> <目录>
+//   agbridge stop <[机器/]会话>            关闭由 agbridge start 创建的会话
+//   跨机启动与关闭需在目标机运行 agbridge up --allow-manage
 //   agbridge log [n] [--me|--for <name>]    最近 n 条投递记录，可按参与者筛选
 // 正文也可以 --file <path> 或走 stdin（正文参数为 - ）。
 // 默认对方忙就后台排队等空闲再投；--sync 前台等；--now 不等直接敲。
@@ -26,14 +29,18 @@ const HOME = process.env.AGBRIDGE_DIR || path.join(os.userInfo().homedir, '.agen
 const SEQ = path.join(HOME, 'seq.json');
 const LOG = path.join(HOME, 'log.jsonl');
 const AGENT_RE = /(^|\/|\s)(claude|codex|antigravity|agy|gemini|hearth|firekeeper|experience(?:-main)?)(\s|$|\.js|\.mjs)/i;
+const START_AGENTS = new Set(['claude', 'codex', 'agy']);
+const SESSION_NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,49}$/;
+const MANAGED_OPTION = '@agbridge-managed';
+const NO_TMUX_SERVER = /^no server running on |^error connecting to .* \(No such file or directory\)$/i;
 const KINDS = new Set(['ask', 'note', 'reply']);
 const MAX_LEN = 10000;         // 与 /api/tmux/send 同款上限
 const WAIT_MAX_MS = 30 * 60e3; // 排队最长半小时，超时放弃并记 log
 const POLL_MS = 2000;
 
-function tmux(args) {
+function tmux(args, options = {}) {
   return new Promise((resolve, reject) => {
-    execFile('tmux', args, { timeout: 5000, maxBuffer: 4 << 20 }, (err, out, serr) => {
+    execFile('tmux', args, { timeout: 5000, maxBuffer: 4 << 20, ...options }, (err, out, serr) => {
       if (!err) return resolve(out);
       reject(new Error(String(serr || '').trim() || String(err.message || err)));
     });
@@ -77,16 +84,17 @@ function agentOf(pid, foregroundOnly) {
 
 async function panes(foregroundOnly = false) {
   const fmt = ['#{pane_id}', '#{session_name}', '#{window_index}', '#{pane_index}',
-    '#{pane_current_command}', '#{pane_current_path}', '#{pane_pid}'].join('␟');
+    '#{pane_current_command}', '#{pane_pid}', '#{pane_current_path}'].join('␟');
   let out;
   try { out = await tmux(['list-panes', '-a', '-F', fmt]); }
   catch (e) {
-    if (/^no server running on |^error connecting to .* \(No such file or directory\)$/i.test(e.message)) return [];
+    if (NO_TMUX_SERVER.test(e.message)) return [];
     throw e;
   }
   return out.split('\n').filter(Boolean).map((l) => {
-    const [id, session, win, idx, cmd, cwd, pid] = l.split('␟');
-    return { id, session, target: `${session}:${win}.${idx}`, cmd, cwd, pid: +pid, ...agentOf(+pid, foregroundOnly) };
+    const [id, session, win, idx, cmd, pid, ...cwd] = l.split('␟');
+    return { id, session, target: `${session}:${win}.${idx}`, cmd, cwd: cwd.join('␟'), pid: +pid,
+      ...agentOf(+pid, foregroundOnly) };
   });
 }
 
@@ -213,6 +221,93 @@ async function cmdList() {
   if (!rows.length) { console.log('没有找到 agent 窗格'); return; }
   const w = rows.reduce((a, r) => r.map((c, i) => Math.max(a[i] || 0, String(c).length)), []);
   for (const r of rows) console.log(r.map((c, i) => String(c).padEnd(w[i])).join('  ').trimEnd());
+}
+
+async function startSession(session, agent, directory, remote) {
+  if (!START_AGENTS.has(agent)) throw new Error('只支持启动 claude、codex 或 agy');
+  if (typeof directory !== 'string' || !directory || /[\x00-\x1f\x7f]/.test(directory)) {
+    throw new Error('请指定有效的工作目录');
+  }
+  const homeRelative = directory === '~' || directory.startsWith('~/');
+  if (remote && !homeRelative && !path.isAbsolute(directory)) {
+    throw new Error('跨机启动请指定目标机的绝对路径或 ~/目录');
+  }
+  const cwd = path.resolve(homeRelative ? path.join(os.homedir(), directory.slice(1)) : directory);
+  try {
+    if (!fs.statSync(cwd).isDirectory()) throw new Error('not a directory');
+  } catch { throw new Error('目录不存在或不可访问：' + cwd); }
+
+  // PATH 的相对项按 agbridge 自己的目录解析，目标目录无法改变 tmux 或 agent 的查找结果。
+  const binDirs = (process.env.PATH ?? '/usr/bin:/bin').split(path.delimiter).map(dir => path.resolve(dir));
+  const installed = binDirs.some(dir => {
+    const bin = path.join(dir, agent);
+    try {
+      fs.accessSync(bin, fs.constants.X_OK);
+      return fs.statSync(bin).isFile();
+    } catch { return false; }
+  });
+  if (!installed) throw new Error('目标机的 PATH 中找不到 ' + agent);
+
+  // tmux 继承客户端 cwd。工作目录经 execFile 传入，避免被 tmux -c 当成格式串展开。
+  const env = { ...process.env, PATH: binDirs.join(path.delimiter) };
+  const pane = (await tmux(['new-session', '-d', '-s', session, '-P', '-F', '#{pane_id}',
+    '--', '/bin/sh', '-c', 'exec ' + agent,
+    ';', 'set-option', '-t', `=${session}:`, MANAGED_OPTION, '1'], { cwd, env })).trim();
+
+  // send 在收件机即时查窗格，等到前台进程出现即可投递，无需等目录心跳。
+  const deadline = Date.now() + 3000;
+  do {
+    const current = (await panes(true)).find(p => p.id === pane && p.session === session);
+    if (!current) throw new Error(`${agent} 启动后已退出：${session}`);
+    if (current.agent === agent) return { pane, ready: true };
+    await sleep(100);
+  } while (Date.now() < deadline);
+  return { pane, ready: false };
+}
+
+async function stopSession(session) {
+  // 在一条 tmux 命令中检查标记并关闭，完整会话名后加 : 指向其活动窗格。
+  const managed = `#{&&:#{==:#{session_name},${session}},#{==:#{${MANAGED_OPTION}},1}}`;
+  const result = await tmux(['if-shell', '-F', '-t', `=${session}:`, managed,
+    `kill-session -t =${session}`, 'display-message -p missing']).catch(e => {
+    if (!NO_TMUX_SERVER.test(e.message)) throw e;
+    return 'missing';
+  });
+  if (result.trim() === 'missing') throw new Error('找不到由 agbridge 启动的会话：' + session);
+  return true;
+}
+
+async function manageSession(method, { session, agent, cwd }, remote = false) {
+  if (typeof session !== 'string' || !SESSION_NAME.test(session)) {
+    throw new Error('会话名限 1–50 位字母、数字、下划线或连字符，首位不能是连字符');
+  }
+  return method === 'start' ? startSession(session, agent, cwd, remote) : stopSession(session);
+}
+
+async function cmdSession(opt) {
+  const [method, target, agent, cwd] = opt._;
+  const start = method === 'start';
+  if (opt._.length !== (start ? 4 : 2)) {
+    throw new Error(start ? '用法：agbridge start <[机器/]会话> <claude|codex|agy> <目录>' :
+      '用法：agbridge stop <[机器/]会话>');
+  }
+  const parts = target.split('/');
+  const session = parts.pop();
+  const [host] = parts;
+  if (parts.length > 1 || host === '' || !session) throw new Error('会话地址格式为 会话名 或 机器/会话名');
+  const data = { session, agent, cwd };
+  let result;
+  if (host) {
+    const config = network.readConfig();
+    if (!config) throw new Error('请先运行 agbridge join 加入网络');
+    result = await network.call(config, method, { ...data, key: config.key, host });
+  } else {
+    result = await manageSession(method, data);
+  }
+  if (start) {
+    const address = host ? host + '/' + result.pane : result.pane;
+    console.log(`${result.ready ? '已启动' : '会话已创建，等待 agent 启动'} ${target} (${address})`);
+  } else console.log('已关闭 ' + target);
 }
 
 async function cmdSend(opt) {
@@ -346,12 +441,14 @@ async function main() {
   if (cmd === 'up') {
     const config = network.readConfig();
     if (!config) throw new Error('请先运行 agbridge join <中转地址:端口> [机器名]');
-    return network.runNode(config, () => agentRows(true), receiveRemote);
+    const manage = opt['allow-manage'] ? (method, data) => manageSession(method, data, true) : undefined;
+    return network.runNode(config, () => agentRows(true), receiveRemote, manage);
   }
   if (cmd === 'list' || cmd === 'ls') return cmdList();
   if (cmd === 'send') return cmdSend(opt);
+  if (cmd === 'start' || cmd === 'stop') return cmdSession(opt);
   if (cmd === 'log') return cmdLog(opt);
-  console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 14).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+  console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 17).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   process.exitCode = cmd ? 1 : 0;
 }
 

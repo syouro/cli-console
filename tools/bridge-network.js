@@ -75,12 +75,13 @@ function channel(socket, handle) {
   }
   function request(method, data, timeout = RPC_TIMEOUT) {
     return new Promise((resolve, reject) => {
+      const hint = method === 'send' || method === 'deliver' ? '，投递状态请查收件机 agbridge log' : '';
       const id = ++sequence;
       const timer = setTimeout(() => {
         waiting.delete(id);
-        reject(new Error('请求超时，投递状态请查收件机 agbridge log'));
+        reject(new Error('请求超时' + hint));
       }, timeout);
-      waiting.set(id, { resolve, reject, timer });
+      waiting.set(id, { resolve, reject, timer, hint });
       try { write({ id, method, data }); }
       catch (e) { clearTimeout(timer); waiting.delete(id); reject(e); }
     });
@@ -114,9 +115,9 @@ function channel(socket, handle) {
   });
   socket.on('error', () => {}); // Pending calls are rejected on close.
   socket.once('close', () => {
-    for (const { reject, timer } of waiting.values()) {
+    for (const { reject, timer, hint } of waiting.values()) {
       clearTimeout(timer);
-      reject(new Error('连接中断，投递状态请查收件机 agbridge log'));
+      reject(new Error('连接中断' + hint));
     }
     waiting.clear();
   });
@@ -147,8 +148,8 @@ function makeRelay(group) {
   const server = tls.createServer({ ...tlsOptions, dhparam, handshakeTimeout: RPC_TIMEOUT,
     pskCallback: (_socket, identity) => identity === 'agbridge-v1' ? Buffer.from(group, 'hex') : null
   }, socket => {
-    let node, deliveries = 0;
-    socket.setTimeout(LEASE, () => { if (!deliveries) socket.destroy(); });
+    let node, pending = 0;
+    socket.setTimeout(LEASE, () => { if (!pending) socket.destroy(); });
     const request = channel(socket, async (method, data) => {
       if (method === 'ping') return true;
       if (method === 'register') {
@@ -172,7 +173,7 @@ function makeRelay(group) {
       if (method === 'list') {
         return [...nodes.values()].map(({ id, name, agents }) => ({ id, name, agents }));
       }
-      if (method === 'send') {
+      if (method === 'send' || method === 'start' || method === 'stop') {
         const source = nodes.get(machineId(data.key));
         if (!source) throw new Error('请先在发送机运行 agbridge up');
         let dest = nodes.get(data.host);
@@ -181,13 +182,16 @@ function makeRelay(group) {
           if (matches.length > 1) throw new Error('同名机器有多台，请用清单里的机器 ID');
           dest = matches[0];
         }
-        if (!dest) throw new Error('收件机未上线：' + data.host);
-        deliveries++;
+        if (!dest) throw new Error((method === 'send' ? '收件机' : '目标机') + '未上线：' + data.host);
+        pending++;
         try {
+          if (method !== 'send') {
+            return await dest.request(method, { session: data.session, agent: data.agent, cwd: data.cwd });
+          }
           return await dest.request('deliver', { message: data.message, sender: source.id,
             target: data.target, now: data.now === true, sync: data.sync === true },
           data.sync ? DELIVERY_TIMEOUT : RPC_TIMEOUT);
-        } finally { deliveries--; }
+        } finally { pending--; }
       }
       throw new Error('不支持的网络请求');
     });
@@ -212,7 +216,8 @@ async function relay(port) {
   console.log('中转已启动，TCP 端口 ' + port + '。用 agbridge invite 查看加入码。');
 }
 
-async function runNode(config, discover, receive) {
+async function runNode(config, discover, receive, manage) {
+  const id = machineId(config.key);
   for (;;) {
     let socket, closed;
     try {
@@ -220,11 +225,15 @@ async function runNode(config, discover, receive) {
       closed = new AbortController();
       socket.once('close', () => closed.abort());
       const request = channel(socket, (method, data) => {
-        if (method !== 'deliver') throw new Error('不支持的请求');
-        return receive(data, machineId(config.key));
+        if (method === 'deliver') return receive(data, id);
+        if (method === 'start' || method === 'stop') {
+          if (!manage) throw new Error('目标机未开启远程会话管理，请运行 agbridge up --allow-manage');
+          return manage(method, data);
+        }
+        throw new Error('不支持的请求');
       });
       await request('register', { name: config.name, key: config.key });
-      console.log('已连接中转：' + config.name + ' (' + machineId(config.key) + ')');
+      console.log('已连接中转：' + config.name + ' (' + id + ')');
       while (!socket.destroyed) {
         const agents = await discover();
         await request('heartbeat', { agents });

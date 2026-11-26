@@ -42,7 +42,7 @@ test('中转支持要求至少 3072 位 DH 的 TLS-PSK 客户端', async () => {
   }
 });
 
-test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 ID 重连', {
+test('独立 tmux 节点跨机会话管理、双向投递、离线并以同一 ID 重连', {
   skip: process.platform !== 'linux' || spawnSync('tmux', ['-V']).status !== 0
 }, async t => {
   const dir = fs.mkdtempSync(path.resolve(os.tmpdir(), 'bridge-net-'));
@@ -53,10 +53,12 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
   assert.ok(path.isAbsolute(tmux));
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
-  // Covers agbridge and server.js helpers. PATH contains only this wrapper so
-  // even deleting the wrapper cannot redirect a later command to system tmux.
+  // Covers agbridge and server.js helpers without access to the default socket.
+  // PATH contains only the test executables.
   fs.writeFileSync(path.join(bin, 'tmux'),
-    '#!/bin/sh\nexec "${TEST_TMUX:?}" -S "${TEST_SOCKET:?}" "$@"\n', { mode: 0o700 });
+    '#!/bin/sh\nexec "${TEST_TMUX:?}" -S "${TEST_SOCKET:?}" -f /dev/null "$@"\n', { mode: 0o700 });
+  fs.writeFileSync(path.join(bin, 'codex'),
+    '#!/bin/sh\nexec "${TEST_AGENT_NODE:?}" "${TEST_AGENT_SCRIPT:?}"\n', { mode: 0o700 });
   const group = crypto.randomBytes(32).toString('hex');
   const server = makeRelay(group);
   server.listen(0, '127.0.0.1');
@@ -66,14 +68,15 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
   const query = { host: '127.0.0.1', port, group };
   await assert.rejects(call({ ...query, group: '0'.repeat(64) }, 'list'));
 
-  async function node(name, fallbackSocket) {
+  async function node(name, { fallbackSocket, allowManage } = {}) {
     const home = path.join(dir, name);
     fs.mkdirSync(home);
     const socketDir = path.join(home, 'sockets');
     const socket = path.join(socketDir, 'tmux.sock');
-    const env = { ...process.env, PATH: bin, TEST_TMUX: tmux, TEST_SOCKET: socket,
-      AGBRIDGE_DIR: home, TMUX_PANE: '', TMUX_TMPDIR: dir, TMUX: fallbackSocket ? fallbackSocket + ',0,0' : '' };
     const app = path.join(home, 'codex.js');
+    const env = { ...process.env, PATH: bin, TEST_TMUX: tmux, TEST_SOCKET: socket,
+      TEST_AGENT_NODE: process.execPath, TEST_AGENT_SCRIPT: app,
+      AGBRIDGE_DIR: home, TMUX_PANE: '', TMUX_TMPDIR: dir, TMUX: fallbackSocket ? fallbackSocket + ',0,0' : '' };
     const inbox = path.join(home, 'inbox');
     fs.writeFileSync(app, `process.stdin.setRawMode(true);
       function draw() {
@@ -84,9 +87,9 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
       setInterval(draw, 100);
       process.stdin.on('data', data => require('node:fs').appendFileSync(${JSON.stringify(inbox)}, data));
     `);
-    async function openPane() {
-      fs.mkdirSync(socketDir);
-      await exec(tmux, ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', name, process.execPath, app], { env });
+    async function openPane(session = name) {
+      fs.mkdirSync(socketDir, { recursive: true });
+      await exec(tmux, ['-S', socket, '-f', '/dev/null', 'new-session', '-d', '-s', session, process.execPath, app], { env });
     }
     // The fixture exits its own process and tmux closes the last session.
     const closePane = () => fs.rmSync(app, { force: true });
@@ -97,7 +100,9 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
     const config = JSON.parse(fs.readFileSync(path.join(home, 'network.json')));
     let worker;
     function up() {
-      worker = spawn(process.execPath, [cli, 'up'], { env, stdio: 'ignore' });
+      const args = [cli, 'up'];
+      if (allowManage) args.push('--allow-manage');
+      worker = spawn(process.execPath, args, { env, stdio: 'ignore' });
     }
     async function down() {
       if (worker && worker.exitCode === null && !worker.signalCode) {
@@ -110,6 +115,7 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
     cleanup.push(down);
     return { id: machineId(config.key), inbox, up, down, home, socket, socketDir, openPane, closePane,
       signal: sig => worker.kill(sig),
+      tmux: async (...args) => (await exec(tmux, ['-S', socket, ...args], { env })).stdout.trim(),
       run: async (...args) => (await exec(process.execPath, [cli, ...args],
         { env: { ...env, TMUX_PANE: '%0' } })).stdout };
   }
@@ -120,9 +126,40 @@ test('独立 tmux 节点通过中转上线、双向投递、离线并以同一 I
   assert.match(await a.run('list'), /没有找到 agent 窗格/);
   assert.equal(fs.existsSync(a.socket), false);
   await a.openPane();
-  const b = await node('lab', a.socket);
+  const b = await node('lab', { fallbackSocket: a.socket, allowManage: true });
+  await until(async () => (await nodes()).some(n => n.id === b.id && !n.agents.length));
+
+  await assert.rejects(b.run('start', 'desk/blocked', 'codex', '/tmp'), /未开启远程会话管理/);
+  fs.mkdirSync(b.socketDir);
+  const project = path.join(b.home, '项目 ␟ quote\' #{session_name} #(printf wrong);');
+  fs.mkdirSync(project);
+  await assert.rejects(a.run('start', 'lab/review', 'sh', project), /只支持启动/);
+  await assert.rejects(a.run('start', 'lab/review', 'claude', project), /PATH.*claude/);
+  await assert.rejects(a.run('start', 'lab/review', 'codex', path.join(project, 'missing')), /目录不存在/);
+  await assert.rejects(a.run('start', 'lab/review', 'codex', '.'), /绝对路径/);
+  assert.equal(fs.existsSync(b.socket), false);
+
+  const started = await a.run('start', 'lab/review', 'codex', '~/' + path.relative(os.homedir(), project));
+  const pane = started.match(/已启动 lab\/review \(lab\/(%\d+)\)/)[1];
+  assert.equal(await b.tmux('display-message', '-p', '-t', pane, '#{pane_current_path}'), project);
+  await a.run('send', 'lab/review', 'note', 'lifecycle-test', '--sync');
+  assert.match(fs.readFileSync(b.inbox, 'utf8'), /lifecycle-test/);
+  await until(async () => (await nodes()).some(n => n.id === b.id && n.agents.some(p => p.id === pane && p.cwd === project)));
+  await assert.rejects(a.run('start', 'lab/review', 'codex', project), /duplicate session/);
+  await b.openPane('review-manual');
+  await assert.rejects(a.run('stop', 'lab/rev'), /找不到由 agbridge 启动的会话/);
+  await assert.rejects(a.run('stop', 'lab/review-manual'), /找不到由 agbridge 启动的会话/);
+  assert.match(await a.run('stop', b.id + '/review'), /已关闭/);
+  assert.equal(await b.tmux('list-sessions', '-F', '#{session_name}'), 'review-manual');
+
+  assert.match(await b.run('start', 'local', 'codex', '.'), /已启动 local/);
+  assert.match(await b.run('stop', 'local'), /已关闭 local/);
+  assert.equal(await b.tmux('list-sessions', '-F', '#{session_name}'), 'review-manual');
+  await b.tmux('kill-session', '-t', '=review-manual');
+  await until(async () => (await nodes()).some(n => n.id === b.id && !n.agents.length));
+
   await b.openPane();
-  await until(async () => (await nodes()).filter(n => n.agents.some(p => p.state === 'idle')).length === 2);
+  await until(async () => (await nodes()).filter(n => n.agents.some(p => p.session === n.name && p.state === 'idle')).length === 2);
   assert.match(await a.run('list'), /lab\/%0\s+lab\s+codex\s+idle/);
   const body = '第一行\nsecond line with "quotes"';
   const ack = await a.run('send', 'lab/codex', 'ask', body);

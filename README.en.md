@@ -140,6 +140,19 @@ Nodes refresh their foreground agent listings about every five seconds and recon
 
 Share the TLS group code only with trusted participants. Members can list agents and working directories and send messages to online agents. Group and machine credentials live in the system account's `~/.agent-bridge/` (override with `AGBRIDGE_DIR`). Run `join` separately on each machine. The relay keeps its online directory and in-flight messages in memory.
 
+#### Start and stop agents on a target machine
+
+On the target, run `agbridge up --allow-manage` to let online group members manage agbridge sessions. Keep `agbridge up` running on the initiating machine. Run these commands from the initiating agent's pane.
+
+```bash
+agbridge start lab/review codex '/srv/my project'
+agbridge send lab/review ask 'Run the tests and reply with the results'
+agbridge stop lab/review                        # close the session after the reply
+```
+
+- `start` opens a detached tmux session in the target directory, launches `claude`, `codex`, or `agy`, and prints the pane address. The CLI must be on the `PATH` of the target's `up` process. Use an absolute path on the target or quote `'~/project'` to use its home directory.
+- `stop` closes the named session created through `agbridge start`. You can use a machine ID in place of its name. Omit `lab/` for local sessions, which also accept relative directories.
+
 ## Environment variables (override config.json)
 
 | Variable | Default | Purpose |
