@@ -262,6 +262,26 @@ test('paneState：agy 干活中（盲文转轮 + 输入框还在）→ busy 而�
   assert.equal(st.kind, 'busy');
 });
 
+test('paneState：codex 初始界面的盲文点阵 logo 不当转轮，空闲 → idle', () => {
+  // 2026-11-27 实测：codex 启动画面中央是盲文字符画，旧规则把它误判成 agy 转轮，消息一直排队
+  const screen = [
+    '>_ OpenAI Codex (v0.172.0)',
+    '   ~/codexDir/step-platform',
+    '',
+    '            ⢀⣀⣤⣤⣤⣀⡀',
+    '        ⢀⣴⣿⠟⠋⠉  ⠉⠙⠻⣿⣦⡀',
+    '       ⣰⣿⠋  ⣠⣶⣿⣿⣶⣄  ⠙⣿⣆',
+    '       ⣿⡇  ⣾⣿  ⣿⣷  ⢸⣿',
+    '        ⠻⣿⣦⣀⡀  ⢀⣀⣴⣿⠟',
+    '',
+    '› Ask Codex to do anything',
+    '',
+    '  GPT-6.2-Sol max · Context 100% left · ~/codexDir/step-platform · Context 0% used',
+    '  ← for agents · ? for shortcuts                         ⚠ 2 warnings · f2 to view',
+  ].join('\n');
+  assert.equal(paneState(screen).kind, 'idle');
+});
+
 test('paneState：markdown 引用块里的有序列表（每行都带 >）不算菜单', () => {
   const screen = [
     '● 原文引用：',

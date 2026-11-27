@@ -1546,8 +1546,10 @@ function paneState(raw) {
       return { kind: 'menu', question, options: opts, mode };
     }
   }
-  // agy 干活时输入框还挂在屏上，得先靠盲文点阵转轮（⣯ Generating… 之类）认出 busy
-  if (busy || tail.some((l) => /^\s*[⠀-⣿]+\s+\S/.test(l))) return { kind: 'busy', mode };
+  // agy 干活时输入框还挂在屏上，得先靠盲文点阵转轮（⣯ Generating… 之类）认出 busy。
+  // 转轮只有一个盲文字符、后面跟普通文字；codex 初始界面的 logo 整片是盲文点阵画，
+  // 不能把它当转轮，不然空闲的 codex 一直被判 busy，排队消息投不进去
+  if (busy || tail.some((l) => /^\s*[⠀-⣿]\s+[^\s⠀-⣿]/.test(l))) return { kind: 'busy', mode };
   // 底部的输入提示符：> / ❯ / ›，或命名的交互提示符如 main> / chat> / bot> / >>>
   for (let k = tail.length - 1; k >= Math.max(0, tail.length - 8); k--) {
     const l = tail[k].trim();
